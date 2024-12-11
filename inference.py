@@ -8,7 +8,7 @@ from diffusers.utils import logging
 
 import imageio
 import numpy as np
-import safetensors.torch
+from safetensors import safe_open
 import torch
 import torch.nn.functional as F
 from PIL import Image
@@ -29,34 +29,33 @@ MAX_WIDTH = 1280
 MAX_NUM_FRAMES = 257
 
 
-def load_vae(vae_dir):
-    vae_ckpt_path = vae_dir / "vae_diffusion_pytorch_model.safetensors"
-    vae_config_path = vae_dir / "config.json"
-    with open(vae_config_path, "r") as f:
-        vae_config = json.load(f)
+def load_vae(vae_config, ckpt):
     vae = CausalVideoAutoencoder.from_config(vae_config)
-    vae_state_dict = safetensors.torch.load_file(vae_ckpt_path)
+    vae_state_dict = {
+        key.replace("vae.", ""): value
+        for key, value in ckpt.items()
+        if key.startswith("vae.")
+    }
     vae.load_state_dict(vae_state_dict)
     if torch.cuda.is_available():
         vae = vae.cuda()
     return vae.to(torch.bfloat16)
 
 
-def load_unet(unet_dir):
-    unet_ckpt_path = unet_dir / "unet_diffusion_pytorch_model.safetensors"
-    unet_config_path = unet_dir / "config.json"
-    transformer_config = Transformer3DModel.load_config(unet_config_path)
+def load_transformer(transformer_config, ckpt):
     transformer = Transformer3DModel.from_config(transformer_config)
-    unet_state_dict = safetensors.torch.load_file(unet_ckpt_path)
-    transformer.load_state_dict(unet_state_dict, strict=True)
+    transformer_state_dict = {
+        key.replace("model.diffusion_model.", ""): value
+        for key, value in ckpt.items()
+        if key.startswith("model.diffusion_model.")
+    }
+    transformer.load_state_dict(transformer_state_dict, strict=True)
     if torch.cuda.is_available():
         transformer = transformer.cuda()
     return transformer
 
 
-def load_scheduler(scheduler_dir):
-    scheduler_config_path = scheduler_dir / "scheduler_config.json"
-    scheduler_config = RectifiedFlowScheduler.load_config(scheduler_config_path)
+def load_scheduler(scheduler_config):
     return RectifiedFlowScheduler.from_config(scheduler_config)
 
 
@@ -168,10 +167,10 @@ def main():
 
     # Directories
     parser.add_argument(
-        "--ckpt_dir",
+        "--ckpt_path",
         type=str,
         required=True,
-        help="Path to the directory containing unet, vae, and scheduler subdirectories",
+        help="Path to a safetensors file that contains all model parts.",
     )
     parser.add_argument(
         "--input_video_path",
@@ -204,6 +203,12 @@ def main():
         type=float,
         default=3,
         help="Guidance scale for the pipeline",
+    )
+    parser.add_argument(
+        "--image_cond_noise_scale",
+        type=float,
+        default=0.15,
+        help="Amount of noise to add to the conditioned image",
     )
     parser.add_argument(
         "--height",
@@ -297,15 +302,22 @@ def main():
         media_items = None
 
     # Paths for the separate mode directories
-    ckpt_dir = Path(args.ckpt_dir)
-    unet_dir = ckpt_dir / "unet"
-    vae_dir = ckpt_dir / "vae"
-    scheduler_dir = ckpt_dir / "scheduler"
+    ckpt_path = Path(args.ckpt_path)
+    ckpt = {}
+    with safe_open(ckpt_path, framework="pt", device="cpu") as f:
+        metadata = f.metadata()
+        for k in f.keys():
+            ckpt[k] = f.get_tensor(k)
+
+    configs = json.loads(metadata["config"])
+    vae_config = configs["vae"]
+    transformer_config = configs["transformer"]
+    scheduler_config = configs["scheduler"]
 
     # Load models
-    vae = load_vae(vae_dir)
-    unet = load_unet(unet_dir)
-    scheduler = load_scheduler(scheduler_dir)
+    vae = load_vae(vae_config, ckpt)
+    transformer = load_transformer(transformer_config, ckpt)
+    scheduler = load_scheduler(scheduler_config)
     patchifier = SymmetricPatchifier(patch_size=1)
     text_encoder = T5EncoderModel.from_pretrained(
         "PixArt-alpha/PixArt-XL-2-1024-MS", subfolder="text_encoder"
@@ -316,12 +328,12 @@ def main():
         "PixArt-alpha/PixArt-XL-2-1024-MS", subfolder="tokenizer"
     )
 
-    if args.bfloat16 and unet.dtype != torch.bfloat16:
-        unet = unet.to(torch.bfloat16)
+    if args.bfloat16 and transformer.dtype != torch.bfloat16:
+        transformer = transformer.to(torch.bfloat16)
 
     # Use submodels for the pipeline
     submodel_dict = {
-        "transformer": unet,
+        "transformer": transformer,
         "patchifier": patchifier,
         "text_encoder": text_encoder,
         "tokenizer": tokenizer,
@@ -365,6 +377,7 @@ def main():
             if media_items is not None
             else ConditioningMethod.UNCONDITIONAL
         ),
+        image_cond_noise_scale=args.image_cond_noise_scale,
         mixed_precision=not args.bfloat16,
     ).images
 
