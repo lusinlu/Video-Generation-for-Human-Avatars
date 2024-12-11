@@ -655,6 +655,26 @@ class LTXVideoPipeline(DiffusionPipeline):
 
         return caption.strip()
 
+    def image_cond_noise_update(
+        self,
+        t,
+        init_latents,
+        latents,
+        noise_scale,
+        conditiong_mask,
+        generator,
+    ):
+        noise = randn_tensor(
+            latents.shape,
+            generator=generator,
+            device=latents.device,
+            dtype=latents.dtype,
+        )
+        latents = (init_latents + noise_scale * noise * (t**2)) * conditiong_mask[
+            ..., None
+        ] + latents * (1 - conditiong_mask[..., None])
+        return latents
+
     # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.StableDiffusionPipeline.prepare_latents
     def prepare_latents(
         self,
@@ -897,6 +917,7 @@ class LTXVideoPipeline(DiffusionPipeline):
         self.video_scale_factor = self.video_scale_factor if is_video else 1
         conditioning_method = kwargs.get("conditioning_method", None)
         vae_per_channel_normalize = kwargs.get("vae_per_channel_normalize", False)
+        image_cond_noise_scale = kwargs.get("image_cond_noise_scale", 0.0)
         init_latents, conditioning_mask = self.prepare_conditioning(
             media_items,
             num_frames,
@@ -924,6 +945,7 @@ class LTXVideoPipeline(DiffusionPipeline):
             latents=init_latents,
             latents_mask=conditioning_mask,
         )
+        orig_conditiong_mask = conditioning_mask
         if conditioning_mask is not None and is_video:
             assert num_images_per_prompt == 1
             conditioning_mask = (
@@ -954,6 +976,15 @@ class LTXVideoPipeline(DiffusionPipeline):
 
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
+                if conditioning_method == ConditioningMethod.FIRST_FRAME:
+                    latents = self.image_cond_noise_update(
+                        t,
+                        init_latents,
+                        latents,
+                        image_cond_noise_scale,
+                        orig_conditiong_mask,
+                        generator,
+                    )
                 latent_model_input = (
                     torch.cat([latents] * 2) if do_classifier_free_guidance else latents
                 )

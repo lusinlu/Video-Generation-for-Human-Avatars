@@ -206,6 +206,12 @@ def main():
         help="Guidance scale for the pipeline",
     )
     parser.add_argument(
+        "--image_cond_noise_scale",
+        type=float,
+        default=0.15,
+        help="Amount of noise to add to the conditioned image",
+    )
+    parser.add_argument(
         "--height",
         type=int,
         default=480,
@@ -365,6 +371,7 @@ def main():
             if media_items is not None
             else ConditioningMethod.UNCONDITIONAL
         ),
+        image_cond_noise_scale=args.image_cond_noise_scale,
         mixed_precision=not args.bfloat16,
     ).images
 
