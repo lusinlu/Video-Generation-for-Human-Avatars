@@ -238,6 +238,20 @@ def main():
         help="Sets the precision for the transformer and tokenizer. Default is bfloat16. If 'mixed_precision' is enabled, it moves to mixed-precision.",
     )
 
+    # VAE noise augmentation
+    parser.add_argument(
+        "--decode_timestep",
+        type=float,
+        default=0.05,
+        help="Timestep for decoding noise",
+    )
+    parser.add_argument(
+        "--decode_noise_scale",
+        type=float,
+        default=0.025,
+        help="Noise level for decoding noise",
+    )
+
     # Prompts
     parser.add_argument(
         "--prompt",
@@ -392,6 +406,8 @@ def main():
             else ConditioningMethod.UNCONDITIONAL
         ),
         image_cond_noise_scale=args.image_cond_noise_scale,
+        decode_timestep=args.decode_timestep,
+        decode_noise_scale=args.decode_noise_scale,
         mixed_precision=(args.precision == "mixed_precision"),
         offload_to_cpu=offload_to_cpu,
     ).images

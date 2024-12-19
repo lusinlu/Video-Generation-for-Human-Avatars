@@ -792,6 +792,8 @@ class LTXVideoPipeline(DiffusionPipeline):
         callback_on_step_end: Optional[Callable[[int, int, Dict], None]] = None,
         clean_caption: bool = True,
         media_items: Optional[torch.FloatTensor] = None,
+        decode_timestep: Union[List[float], float] = 0.0,
+        decode_noise_scale: Optional[List[float]] = None,
         mixed_precision: bool = False,
         offload_to_cpu: bool = False,
         **kwargs,
@@ -1171,11 +1173,30 @@ class LTXVideoPipeline(DiffusionPipeline):
             // math.prod(self.patchifier.patch_size),
         )
         if output_type != "latent":
+            if self.vae.decoder.timestep_conditioning:
+                noise = torch.randn_like(latents)
+                if not isinstance(decode_timestep, list):
+                    decode_timestep = [decode_timestep] * latents.shape[0]
+                if decode_noise_scale is None:
+                    decode_noise_scale = decode_timestep
+                elif not isinstance(decode_noise_scale, list):
+                    decode_noise_scale = [decode_noise_scale] * latents.shape[0]
+
+                decode_timestep = torch.tensor(decode_timestep).to(latents.device)
+                decode_noise_scale = torch.tensor(decode_noise_scale).to(
+                    latents.device
+                )[:, None, None, None, None]
+                latents = (
+                    latents * (1 - decode_noise_scale) + noise * decode_noise_scale
+                )
+            else:
+                decode_timestep = None
             image = vae_decode(
                 latents,
                 self.vae,
                 is_video,
                 vae_per_channel_normalize=kwargs["vae_per_channel_normalize"],
+                timestep=decode_timestep,
             )
             image = self.image_processor.postprocess(image, output_type=output_type)
 

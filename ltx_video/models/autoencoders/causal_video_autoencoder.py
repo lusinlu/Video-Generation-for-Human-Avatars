@@ -641,7 +641,7 @@ class Decoder(nn.Module):
         self,
         sample: torch.FloatTensor,
         target_shape,
-        timesteps: Optional[torch.Tensor] = None,
+        timestep: Optional[torch.Tensor] = None,
     ) -> torch.FloatTensor:
         r"""The forward method of the `Decoder` class."""
         assert target_shape is not None, "target_shape must be provided"
@@ -661,14 +661,14 @@ class Decoder(nn.Module):
 
         if self.timestep_conditioning:
             assert (
-                timesteps is not None
-            ), "should pass timesteps with timestep_conditioning=True"
-            scaled_timesteps = timesteps * self.timestep_scale_multiplier
+                timestep is not None
+            ), "should pass timestep with timestep_conditioning=True"
+            scaled_timestep = timestep * self.timestep_scale_multiplier
 
         for up_block in self.up_blocks:
             if self.timestep_conditioning and isinstance(up_block, UNetMidBlock3D):
                 sample = checkpoint_fn(up_block)(
-                    sample, causal=self.causal, timesteps=scaled_timesteps
+                    sample, causal=self.causal, timestep=scaled_timestep
                 )
             else:
                 sample = checkpoint_fn(up_block)(sample, causal=self.causal)
@@ -676,25 +676,25 @@ class Decoder(nn.Module):
         sample = self.conv_norm_out(sample)
 
         if self.timestep_conditioning:
-            embedded_timesteps = self.last_time_embedder(
-                timestep=scaled_timesteps.flatten(),
+            embedded_timestep = self.last_time_embedder(
+                timestep=scaled_timestep.flatten(),
                 resolution=None,
                 aspect_ratio=None,
                 batch_size=sample.shape[0],
                 hidden_dtype=sample.dtype,
             )
-            embedded_timesteps = embedded_timesteps.view(
-                batch_size, embedded_timesteps.shape[-1], 1, 1, 1
+            embedded_timestep = embedded_timestep.view(
+                batch_size, embedded_timestep.shape[-1], 1, 1, 1
             )
             ada_values = self.last_scale_shift_table[
                 None, ..., None, None, None
-            ] + embedded_timesteps.reshape(
+            ] + embedded_timestep.reshape(
                 batch_size,
                 2,
                 -1,
-                embedded_timesteps.shape[-3],
-                embedded_timesteps.shape[-2],
-                embedded_timesteps.shape[-1],
+                embedded_timestep.shape[-3],
+                embedded_timestep.shape[-2],
+                embedded_timestep.shape[-1],
             )
             shift, scale = ada_values.unbind(dim=1)
             sample = sample * (1 + scale) + shift
@@ -801,16 +801,16 @@ class UNetMidBlock3D(nn.Module):
         self,
         hidden_states: torch.FloatTensor,
         causal: bool = True,
-        timesteps: Optional[torch.Tensor] = None,
+        timestep: Optional[torch.Tensor] = None,
     ) -> torch.FloatTensor:
         timestep_embed = None
         if self.timestep_conditioning:
             assert (
-                timesteps is not None
-            ), "should pass timesteps with timestep_conditioning=True"
+                timestep is not None
+            ), "should pass timestep with timestep_conditioning=True"
             batch_size = hidden_states.shape[0]
             timestep_embed = self.time_embedder(
-                timestep=timesteps.flatten(),
+                timestep=timestep.flatten(),
                 resolution=None,
                 aspect_ratio=None,
                 batch_size=batch_size,
@@ -823,7 +823,7 @@ class UNetMidBlock3D(nn.Module):
         if self.attention_blocks:
             for resnet, attention in zip(self.res_blocks, self.attention_blocks):
                 hidden_states = resnet(
-                    hidden_states, causal=causal, timesteps=timestep_embed
+                    hidden_states, causal=causal, timestep=timestep_embed
                 )
 
                 # Reshape the hidden states to be (batch_size, frames * height * width, channel)
@@ -870,7 +870,7 @@ class UNetMidBlock3D(nn.Module):
         else:
             for resnet in self.res_blocks:
                 hidden_states = resnet(
-                    hidden_states, causal=causal, timesteps=timestep_embed
+                    hidden_states, causal=causal, timestep=timestep_embed
                 )
 
         return hidden_states
@@ -1055,7 +1055,7 @@ class ResnetBlock3D(nn.Module):
         self,
         input_tensor: torch.FloatTensor,
         causal: bool = True,
-        timesteps: Optional[torch.Tensor] = None,
+        timestep: Optional[torch.Tensor] = None,
     ) -> torch.FloatTensor:
         hidden_states = input_tensor
         batch_size = hidden_states.shape[0]
@@ -1063,17 +1063,17 @@ class ResnetBlock3D(nn.Module):
         hidden_states = self.norm1(hidden_states)
         if self.timestep_conditioning:
             assert (
-                timesteps is not None
-            ), "should pass timesteps with timestep_conditioning=True"
+                timestep is not None
+            ), "should pass timestep with timestep_conditioning=True"
             ada_values = self.scale_shift_table[
                 None, ..., None, None, None
-            ] + timesteps.reshape(
+            ] + timestep.reshape(
                 batch_size,
                 4,
                 -1,
-                timesteps.shape[-3],
-                timesteps.shape[-2],
-                timesteps.shape[-1],
+                timestep.shape[-3],
+                timestep.shape[-2],
+                timestep.shape[-1],
             )
             shift1, scale1, shift2, scale2 = ada_values.unbind(dim=1)
 
@@ -1228,9 +1228,9 @@ def demo_video_autoencoder_forward_backward():
     print(f"input shape={input_videos.shape}")
     print(f"latent shape={latent.shape}")
 
-    timesteps = torch.ones(input_videos.shape[0]) * 0.1
+    timestep = torch.ones(input_videos.shape[0]) * 0.1
     reconstructed_videos = video_autoencoder.decode(
-        latent, target_shape=input_videos.shape, timesteps=timesteps
+        latent, target_shape=input_videos.shape, timestep=timestep
     ).sample
 
     print(f"reconstructed shape={reconstructed_videos.shape}")
@@ -1239,7 +1239,7 @@ def demo_video_autoencoder_forward_backward():
     input_image = input_videos[:, :, :1, :, :]
     image_latent = video_autoencoder.encode(input_image).latent_dist.mode()
     _ = video_autoencoder.decode(
-        image_latent, target_shape=image_latent.shape, timesteps=timesteps
+        image_latent, target_shape=image_latent.shape, timestep=timestep
     ).sample
 
     # first_frame_latent = latent[:, :, :1, :, :]
