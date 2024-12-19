@@ -298,7 +298,7 @@ class LTXVideoPipeline(DiffusionPipeline):
         # See Section 3.1. of the paper.
         # FIXME: to be configured in config not hardecoded. Fix in separate PR with rest of config
         max_length = 128  # TPU supports only lengths multiple of 128
-
+        text_enc_device = next(self.text_encoder.parameters()).device
         if prompt_embeds is None:
             prompt = self._text_preprocessing(prompt, clean_caption=clean_caption)
             text_inputs = self.tokenizer(
@@ -326,10 +326,11 @@ class LTXVideoPipeline(DiffusionPipeline):
                 )
 
             prompt_attention_mask = text_inputs.attention_mask
+            prompt_attention_mask = prompt_attention_mask.to(text_enc_device)
             prompt_attention_mask = prompt_attention_mask.to(device)
 
             prompt_embeds = self.text_encoder(
-                text_input_ids.to(device), attention_mask=prompt_attention_mask
+                text_input_ids.to(text_enc_device), attention_mask=prompt_attention_mask
             )
             prompt_embeds = prompt_embeds[0]
 
@@ -370,10 +371,12 @@ class LTXVideoPipeline(DiffusionPipeline):
                 return_tensors="pt",
             )
             negative_prompt_attention_mask = uncond_input.attention_mask
-            negative_prompt_attention_mask = negative_prompt_attention_mask.to(device)
+            negative_prompt_attention_mask = negative_prompt_attention_mask.to(
+                text_enc_device
+            )
 
             negative_prompt_embeds = self.text_encoder(
-                uncond_input.input_ids.to(device),
+                uncond_input.input_ids.to(text_enc_device),
                 attention_mask=negative_prompt_attention_mask,
             )
             negative_prompt_embeds = negative_prompt_embeds[0]
@@ -701,10 +704,12 @@ class LTXVideoPipeline(DiffusionPipeline):
 
         if latents is None:
             latents = randn_tensor(
-                shape, generator=generator, device=device, dtype=dtype
+                shape, generator=generator, device=generator.device, dtype=dtype
             )
         elif latents_mask is not None:
-            noise = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
+            noise = randn_tensor(
+                shape, generator=generator, device=generator.device, dtype=dtype
+            )
             latents = latents * latents_mask[..., None] + noise * (
                 1 - latents_mask[..., None]
             )
@@ -782,6 +787,7 @@ class LTXVideoPipeline(DiffusionPipeline):
         clean_caption: bool = True,
         media_items: Optional[torch.FloatTensor] = None,
         mixed_precision: bool = False,
+        offload_to_cpu: bool = False,
         **kwargs,
     ) -> Union[ImagePipelineOutput, Tuple]:
         """
@@ -890,6 +896,8 @@ class LTXVideoPipeline(DiffusionPipeline):
         do_classifier_free_guidance = guidance_scale > 1.0
 
         # 3. Encode input prompt
+        self.text_encoder = self.text_encoder.to(self._execution_device)
+
         (
             prompt_embeds,
             prompt_attention_mask,
@@ -907,6 +915,12 @@ class LTXVideoPipeline(DiffusionPipeline):
             negative_prompt_attention_mask=negative_prompt_attention_mask,
             clean_caption=clean_caption,
         )
+
+        if offload_to_cpu:
+            self.text_encoder = self.text_encoder.cpu()
+
+        self.transformer = self.transformer.to(self._execution_device)
+
         if do_classifier_free_guidance:
             prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
             prompt_attention_mask = torch.cat(
@@ -1095,6 +1109,11 @@ class LTXVideoPipeline(DiffusionPipeline):
 
                 if callback_on_step_end is not None:
                     callback_on_step_end(self, i, t, {})
+
+        if offload_to_cpu:
+            self.transformer = self.transformer.cpu()
+            if self._execution_device == "cuda":
+                torch.cuda.empty_cache()
 
         latents = self.patchifier.unpatchify(
             latents=latents,

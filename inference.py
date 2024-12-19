@@ -27,6 +27,11 @@ MAX_WIDTH = 1280
 MAX_NUM_FRAMES = 257
 
 
+def get_total_gpu_memory():
+    if torch.cuda.is_available():
+        total_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+        return total_memory
+    return None
 
 
 def load_image_to_tensor_with_resize_and_crop(
@@ -222,6 +227,12 @@ def main():
         help="Negative prompt for undesired features",
     )
 
+    parser.add_argument(
+        "--offload_to_cpu",
+        action="store_true",
+        help="Offloading unnecessary computations to CPU.",
+    )
+
     logger = logging.get_logger(__name__)
 
     args = parser.parse_args()
@@ -229,6 +240,8 @@ def main():
     logger.warning(f"Running generation with arguments: {args}")
 
     seed_everething(args.seed)
+
+    offload_to_cpu = False if not args.offload_to_cpu else get_total_gpu_memory() < 30
 
     output_dir = (
         Path(args.output_path)
@@ -343,6 +356,7 @@ def main():
         ),
         image_cond_noise_scale=args.image_cond_noise_scale,
         mixed_precision=(args.precision == "mixed_precision"),
+        offload_to_cpu=offload_to_cpu,
     ).images
 
     # Crop the padded images to the desired resolution and number of frames
