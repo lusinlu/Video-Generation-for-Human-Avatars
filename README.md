@@ -7,7 +7,7 @@ This is the official repository for LTX-Video.
 [Website](https://www.lightricks.com/ltxv) |
 [Model](https://huggingface.co/Lightricks/LTX-Video) |
 [Demo](https://fal.ai/models/fal-ai/ltx-video) |
-[Paper (Soon)](https://github.com/Lightricks/LTX-Video) 
+[Paper (Soon)](https://github.com/Lightricks/LTX-Video)
 
 </div>
 
@@ -20,7 +20,11 @@ This is the official repository for LTX-Video.
     - [Installation](#installation)
     - [Inference](#inference)
   - [ComfyUI Integration](#comfyui-integration)
+  - [Diffusers Integration](#diffusers-integration)
 - [Model User Guide](#model-user-guide)
+- [Community Contribution](#community-contribution)
+- [Training](#trining)
+- [Join Us!](#join-us)
 - [Acknowledgement](#acknowledgement)
 
 # Introduction
@@ -60,13 +64,13 @@ source env/bin/activate
 python -m pip install -e .\[inference-script\]
 ```
 
-Then, download the model from [Hugging Face](https://huggingface.co/Lightricks/LTX-Video) 
+Then, download the model from [Hugging Face](https://huggingface.co/Lightricks/LTX-Video)
 
 ```python
-from huggingface_hub import snapshot_download
+from huggingface_hub import hf_hub_download
 
 model_path = 'PATH'   # The local directory to save downloaded checkpoint
-snapshot_download("Lightricks/LTX-Video", local_dir=model_path, local_dir_use_symlinks=False, repo_type='model')
+hf_hub_download(repo_id="Lightricks/LTX-Video", filename="ltx-video-2b-v0.9.1.safetensors", local_dir=model_path, local_dir_use_symlinks=False, repo_type='model')
 ```
 
 ### Inference
@@ -113,7 +117,68 @@ When writing prompts, focus on detailed, chronological descriptions of actions a
 * Guidance Scale: 3-3.5 are the recommended values
 * Inference Steps: More steps (40+) for quality, fewer steps (20-30) for speed
 
-## More to come...
+## Community Contribution
+
+### ComfyUI-LTXTricks 🛠️
+
+A community project providing additional nodes for enhanced control over the LTX Video model. It includes implementations of advanced techniques like RF-Inversion, RF-Edit, FlowEdit, and more. These nodes enable workflows such as Image and Video to Video (I+V2V), enhanced sampling via Spatiotemporal Skip Guidance (STG), and interpolation with precise frame settings.
+
+- **Repository:** [ComfyUI-LTXTricks](https://github.com/logtd/ComfyUI-LTXTricks)
+- **Features:**
+  - 🔄 **RF-Inversion:** Implements [RF-Inversion](https://rf-inversion.github.io/) with an [example workflow here](https://github.com/logtd/ComfyUI-LTXTricks/blob/main/example_workflows/example_ltx_inversion.json).
+  - ✂️ **RF-Edit:** Implements [RF-Solver-Edit](https://github.com/wangjiangshan0725/RF-Solver-Edit) with an [example workflow here](https://github.com/logtd/ComfyUI-LTXTricks/blob/main/example_workflows/example_ltx_rf_edit.json).
+  - 🌊 **FlowEdit:** Implements [FlowEdit](https://github.com/fallenshock/FlowEdit) with an [example workflow here](https://github.com/logtd/ComfyUI-LTXTricks/blob/main/example_workflows/example_ltx_flow_edit.json).
+  - 🎥 **I+V2V:** Enables Video to Video with a reference image. [Example workflow](https://github.com/logtd/ComfyUI-LTXTricks/blob/main/example_workflows/example_ltx_iv2v.json).
+  - ✨ **Enhance:** Partial implementation of [STGuidance](https://junhahyung.github.io/STGuidance/). [Example workflow](https://github.com/logtd/ComfyUI-LTXTricks/blob/main/example_workflows/example_ltxv_stg.json).
+  - 🖼️ **Interpolation and Frame Setting:** Nodes for precise control of latents per frame. [Example workflow](https://github.com/logtd/ComfyUI-LTXTricks/blob/main/example_workflows/example_ltx_interpolation.json).
+
+
+### LTX-VideoQ8 🎱
+
+**LTX-VideoQ8** is an 8-bit optimized version of [LTX-Video](https://github.com/Lightricks/LTX-Video), designed for faster performance on NVIDIA ADA GPUs.
+
+- **Repository:** [LTX-VideoQ8](https://github.com/KONAKONA666/LTX-Video)
+- **Features:**
+  - 🚀 Up to 3X speed-up with no accuracy loss
+  - 🎥 Generate 720x480x121 videos in under a minute on RTX 4060 (8GB VRAM)
+  - 🛠️ Fine-tune 2B transformer models with precalculated latents
+- **Community Discussion:** [Reddit Thread](https://www.reddit.com/r/StableDiffusion/comments/1h79ks2/fast_ltx_video_on_rtx_4060_and_other_ada_gpus/)
+
+### Your Contribution
+
+...is welcome! If you have a project or tool that integrates with LTX-Video,
+please let us know by opening an issue or pull request.
+
+# Training
+
+## Diffusers
+
+Diffusers implemented [LoRA support](https://github.com/huggingface/diffusers/pull/10228),
+with a training script for fine-tuning.
+More information and training script in
+[finetrainers](https://github.com/a-r-r-o-w/finetrainers?tab=readme-ov-file#training).
+
+## Diffusion-Pipe
+
+An experimental training framework with pipeline parallelism, enabling fine-tuning of large models like **LTX-Video** across multiple GPUs.
+
+- **Repository:** [Diffusion-Pipe](https://github.com/tdrussell/diffusion-pipe)
+- **Features:**
+  - 🛠️ Full fine-tune support for LTX-Video using LoRA
+  - 📊 Useful metrics logged to Tensorboard
+  - 🔄 Training state checkpointing and resumption
+  - ⚡ Efficient pre-caching of latents and text embeddings for multi-GPU setups
+
+
+# Join Us 🚀
+
+Want to work on cutting-edge AI research and make a real impact on millions of users worldwide?
+
+At **Lightricks**, an AI-first company, we’re revolutionizing how visual content is created.
+
+If you are passionate about AI, computer vision, and video generation, we would love to hear from you!
+
+Please visit our [careers page](https://careers.lightricks.com/careers?query=&office=all&department=R%26D) for more information.
 
 # Acknowledgement
 
