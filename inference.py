@@ -20,7 +20,7 @@ from ltx_video.models.transformers.transformer3d import Transformer3DModel
 from ltx_video.pipelines.pipeline_ltx_video import LTXVideoPipeline
 from ltx_video.schedulers.rf import RectifiedFlowScheduler
 from ltx_video.utils.conditioning_method import ConditioningMethod
-
+from ltx_video.utils.skip_layer_strategy import SkipLayerStrategy
 
 MAX_HEIGHT = 720
 MAX_WIDTH = 1280
@@ -180,6 +180,30 @@ def main():
         help="Guidance scale for the pipeline",
     )
     parser.add_argument(
+        "--stg_scale",
+        type=float,
+        default=1,
+        help="Spatiotemporal guidance scale for the pipeline. 0 to disable STG.",
+    )
+    parser.add_argument(
+        "--stg_rescale",
+        type=float,
+        default=0.7,
+        help="Spatiotemporal guidance rescaling scale for the pipeline. 1 to disable rescale.",
+    )
+    parser.add_argument(
+        "--stg_mode",
+        type=str,
+        default="stg_a",
+        help="Spatiotemporal guidance mode for the pipeline. Can be either stg_a or stg_r.",
+    )
+    parser.add_argument(
+        "--stg_skip_layers",
+        type=str,
+        default="19",
+        help="Attention layers to skip for spatiotemporal guidance. Comma separated list of integers.",
+    )
+    parser.add_argument(
         "--image_cond_noise_scale",
         type=float,
         default=0.15,
@@ -308,6 +332,14 @@ def main():
         transformer = transformer.to(torch.bfloat16)
     text_encoder = text_encoder.to(torch.bfloat16)
 
+    # Set spatiotemporal guidance
+    skip_block_list = [int(x.strip()) for x in args.stg_skip_layers.split(",")]
+    skip_layer_strategy = (
+        SkipLayerStrategy.Attention
+        if args.stg_mode.lower() == "stg_a"
+        else SkipLayerStrategy.Residual
+    )
+
     # Use submodels for the pipeline
     submodel_dict = {
         "transformer": transformer,
@@ -339,6 +371,11 @@ def main():
         num_inference_steps=args.num_inference_steps,
         num_images_per_prompt=args.num_images_per_prompt,
         guidance_scale=args.guidance_scale,
+        skip_layer_strategy=skip_layer_strategy,
+        skip_block_list=skip_block_list,
+        stg_scale=args.stg_scale,
+        do_rescaling=args.stg_rescale != 1,
+        rescaling_scale=args.stg_rescale,
         generator=generator,
         output_type="pt",
         callback_on_step_end=None,

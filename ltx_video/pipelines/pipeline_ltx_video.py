@@ -37,6 +37,7 @@ from ltx_video.models.autoencoders.causal_video_autoencoder import (
 )
 from ltx_video.schedulers.rf import TimestepShifter
 from ltx_video.utils.conditioning_method import ConditioningMethod
+from ltx_video.utils.skip_layer_strategy import SkipLayerStrategy
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -773,6 +774,11 @@ class LTXVideoPipeline(DiffusionPipeline):
         num_inference_steps: int = 20,
         timesteps: List[int] = None,
         guidance_scale: float = 4.5,
+        skip_layer_strategy: Optional[SkipLayerStrategy] = None,
+        skip_block_list: List[int] = None,
+        stg_scale: float = 1.0,
+        do_rescaling: bool = True,
+        rescaling_scale: float = 0.7,
         num_images_per_prompt: Optional[int] = 1,
         eta: float = 0.0,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
@@ -894,6 +900,19 @@ class LTXVideoPipeline(DiffusionPipeline):
         # of the Imagen paper: https://arxiv.org/pdf/2205.11487.pdf . `guidance_scale = 1`
         # corresponds to doing no classifier free guidance.
         do_classifier_free_guidance = guidance_scale > 1.0
+        do_spatio_temporal_guidance = stg_scale > 0.0
+
+        num_conds = 1
+        if do_classifier_free_guidance:
+            num_conds += 1
+        if do_spatio_temporal_guidance:
+            num_conds += 1
+
+        skip_layer_mask = None
+        if do_spatio_temporal_guidance:
+            skip_layer_mask = self.transformer.create_skip_layer_mask(
+                skip_block_list, batch_size, num_conds, 2
+            )
 
         # 3. Encode input prompt
         self.text_encoder = self.text_encoder.to(self._execution_device)
@@ -921,10 +940,23 @@ class LTXVideoPipeline(DiffusionPipeline):
 
         self.transformer = self.transformer.to(self._execution_device)
 
+        prompt_embeds_batch = prompt_embeds
+        prompt_attention_mask_batch = prompt_attention_mask
         if do_classifier_free_guidance:
-            prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
-            prompt_attention_mask = torch.cat(
+            prompt_embeds_batch = torch.cat(
+                [negative_prompt_embeds, prompt_embeds], dim=0
+            )
+            prompt_attention_mask_batch = torch.cat(
                 [negative_prompt_attention_mask, prompt_attention_mask], dim=0
+            )
+        if do_spatio_temporal_guidance:
+            prompt_embeds_batch = torch.cat([prompt_embeds_batch, prompt_embeds], dim=0)
+            prompt_attention_mask_batch = torch.cat(
+                [
+                    prompt_attention_mask_batch,
+                    prompt_attention_mask,
+                ],
+                dim=0,
             )
 
         # 3b. Encode and prepare conditioning data
@@ -953,7 +985,7 @@ class LTXVideoPipeline(DiffusionPipeline):
             batch_size=batch_size * num_images_per_prompt,
             num_latent_channels=self.transformer.config.in_channels,
             num_patches=num_latent_patches,
-            dtype=prompt_embeds.dtype,
+            dtype=prompt_embeds_batch.dtype,
             device=device,
             generator=generator,
             latents=init_latents,
@@ -963,8 +995,8 @@ class LTXVideoPipeline(DiffusionPipeline):
         if conditioning_mask is not None and is_video:
             assert num_images_per_prompt == 1
             conditioning_mask = (
-                torch.cat([conditioning_mask] * 2)
-                if do_classifier_free_guidance
+                torch.cat([conditioning_mask] * num_conds)
+                if num_conds > 1
                 else conditioning_mask
             )
 
@@ -999,8 +1031,9 @@ class LTXVideoPipeline(DiffusionPipeline):
                         orig_conditiong_mask,
                         generator,
                     )
+
                 latent_model_input = (
-                    torch.cat([latents] * 2) if do_classifier_free_guidance else latents
+                    torch.cat([latents] * num_conds) if num_conds > 1 else latents
                 )
                 latent_model_input = self.scheduler.scale_model_input(
                     latent_model_input, t
@@ -1071,20 +1104,34 @@ class LTXVideoPipeline(DiffusionPipeline):
                     noise_pred = self.transformer(
                         latent_model_input.to(self.transformer.dtype),
                         indices_grid,
-                        encoder_hidden_states=prompt_embeds.to(self.transformer.dtype),
-                        encoder_attention_mask=prompt_attention_mask,
+                        encoder_hidden_states=prompt_embeds_batch.to(
+                            self.transformer.dtype
+                        ),
+                        encoder_attention_mask=prompt_attention_mask_batch,
                         timestep=current_timestep,
+                        skip_layer_mask=skip_layer_mask,
+                        skip_layer_strategy=skip_layer_strategy,
                         return_dict=False,
                     )[0]
 
                 # perform guidance
+                if do_spatio_temporal_guidance:
+                    noise_pred_text_perturb = noise_pred[-1:]
                 if do_classifier_free_guidance:
-                    noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+                    noise_pred_uncond, noise_pred_text = noise_pred[:2].chunk(2)
                     noise_pred = noise_pred_uncond + guidance_scale * (
                         noise_pred_text - noise_pred_uncond
                     )
-                    current_timestep, _ = current_timestep.chunk(2)
+                if do_spatio_temporal_guidance:
+                    noise_pred = noise_pred + stg_scale * (
+                        noise_pred_text - noise_pred_text_perturb
+                    )
+                    if do_rescaling:
+                        factor = noise_pred_text.std() / noise_pred.std()
+                        factor = rescaling_scale * factor + (1 - rescaling_scale)
+                        noise_pred = noise_pred * factor
 
+                current_timestep = current_timestep[:1]
                 # learned sigma
                 if (
                     self.transformer.config.out_channels // 2

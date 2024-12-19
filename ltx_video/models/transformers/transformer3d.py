@@ -20,6 +20,14 @@ from safetensors import safe_open
 
 from ltx_video.models.transformers.attention import BasicTransformerBlock
 from ltx_video.models.transformers.embeddings import get_3d_sincos_pos_embed
+from ltx_video.utils.skip_layer_strategy import SkipLayerStrategy
+
+from ltx_video.utils.diffusers_config_mapping import (
+    diffusers_and_ours_config_mapping,
+    make_hashable_key,
+    TRANSFORMER_KEYS_RENAME_DICT,
+)
+
 
 logger = logging.get_logger(__name__)
 
@@ -171,6 +179,21 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
         # push config down to the attention modules
         for block in self.transformer_blocks:
             block.set_use_tpu_flash_attention()
+
+    def create_skip_layer_mask(
+        self,
+        skip_block_list: List[int],
+        batch_size: int,
+        num_conds: int,
+        ptb_index: int,
+    ):
+        num_layers = len(self.transformer_blocks)
+        mask = torch.ones(
+            (num_layers, batch_size * num_conds), device=self.device, dtype=self.dtype
+        )
+        for block_idx in skip_block_list:
+            mask[block_idx, ptb_index::num_conds] = 0
+        return mask
 
     def initialize(self, embedding_std: float, mode: Literal["ltx_video", "legacy"]):
         def _basic_init(module):
@@ -390,6 +413,8 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
         cross_attention_kwargs: Dict[str, Any] = None,
         attention_mask: Optional[torch.Tensor] = None,
         encoder_attention_mask: Optional[torch.Tensor] = None,
+        skip_layer_mask: Optional[torch.Tensor] = None,
+        skip_layer_strategy: Optional[SkipLayerStrategy] = None,
         return_dict: bool = True,
     ):
         """
@@ -423,6 +448,11 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
 
                 If `ndim == 2`: will be interpreted as a mask, then converted into a bias consistent with the format
                 above. This bias will be added to the cross-attention scores.
+            skip_layer_mask ( `torch.Tensor`, *optional*):
+                A mask of shape `(num_layers, batch)` that indicates which layers to skip. `0` at position
+                `layer, batch_idx` indicates that the layer should be skipped for the corresponding batch index.
+            skip_layer_strategy ( `SkipLayerStrategy`, *optional*, defaults to `None`):
+                Controls which layers are skipped when calculating a perturbed latent for spatiotemporal guidance.
             return_dict (`bool`, *optional*, defaults to `True`):
                 Whether or not to return a [`~models.unets.unet_2d_condition.UNet2DConditionOutput`] instead of a plain
                 tuple.
@@ -488,6 +518,11 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
             batch_size, -1, embedded_timestep.shape[-1]
         )
 
+        if skip_layer_mask is None:
+            skip_layer_mask = torch.ones(
+                len(self.transformer_blocks), batch_size, device=hidden_states.device
+            )
+
         # 2. Blocks
         if self.caption_projection is not None:
             batch_size = hidden_states.shape[0]
@@ -496,7 +531,7 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
                 batch_size, -1, hidden_states.shape[-1]
             )
 
-        for block in self.transformer_blocks:
+        for block_idx, block in enumerate(self.transformer_blocks):
             if self.training and self.gradient_checkpointing:
 
                 def create_custom_forward(module, return_dict=None):
@@ -521,6 +556,8 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
                     timestep,
                     cross_attention_kwargs,
                     class_labels,
+                    skip_layer_mask[block_idx],
+                    skip_layer_strategy,
                     **ckpt_kwargs,
                 )
             else:
@@ -533,6 +570,8 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
                     timestep=timestep,
                     cross_attention_kwargs=cross_attention_kwargs,
                     class_labels=class_labels,
+                    skip_layer_mask=skip_layer_mask[block_idx],
+                    skip_layer_strategy=skip_layer_strategy,
                 )
 
         # 3. Output
