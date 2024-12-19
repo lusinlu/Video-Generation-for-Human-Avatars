@@ -88,6 +88,9 @@ python inference.py --ckpt_path 'PATH' --prompt "PROMPT" --input_image_path IMAG
 ## ComfyUI Integration
 To use our model with ComfyUI, please follow the instructions at [https://github.com/Lightricks/ComfyUI-LTXVideo/](https://github.com/Lightricks/ComfyUI-LTXVideo/).
 
+## Diffusers Integration
+To use our model with the Diffusers Python library, check out the [official documentation](https://huggingface.co/docs/diffusers/main/en/api/pipelines/ltx_video).
+
 # Model User Guide
 
 ## 📝 Prompt Engineering
