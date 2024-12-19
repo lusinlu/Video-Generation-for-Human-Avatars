@@ -3,6 +3,7 @@ import os
 from functools import partial
 from types import SimpleNamespace
 from typing import Any, Mapping, Optional, Tuple, Union, List
+from pathlib import Path
 
 import torch
 import numpy as np
@@ -11,13 +12,20 @@ from torch import nn
 from diffusers.utils import logging
 import torch.nn.functional as F
 from diffusers.models.embeddings import PixArtAlphaCombinedTimestepSizeEmbeddings
+from safetensors import safe_open
 
 
 from ltx_video.models.autoencoders.conv_nd_factory import make_conv_nd, make_linear_nd
 from ltx_video.models.autoencoders.pixel_norm import PixelNorm
 from ltx_video.models.autoencoders.vae import AutoencoderKLWrapper
 from ltx_video.models.transformers.attention import Attention
+from ltx_video.utils.diffusers_config_mapping import (
+    diffusers_and_ours_config_mapping,
+    make_hashable_key,
+    VAE_KEYS_RENAME_DICT,
+)
 
+PER_CHANNEL_STATISTICS_PREFIX = "per_channel_statistics."
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
 
@@ -29,34 +37,85 @@ class CausalVideoAutoencoder(AutoencoderKLWrapper):
         *args,
         **kwargs,
     ):
-        config_local_path = pretrained_model_name_or_path / "config.json"
-        config = cls.load_config(config_local_path, **kwargs)
-        video_vae = cls.from_config(config)
-        video_vae.to(kwargs["torch_dtype"])
+        pretrained_model_name_or_path = Path(pretrained_model_name_or_path)
+        if (
+            pretrained_model_name_or_path.is_dir()
+            and (pretrained_model_name_or_path / "autoencoder.pth").exists()
+        ):
+            config_local_path = pretrained_model_name_or_path / "config.json"
+            config = cls.load_config(config_local_path, **kwargs)
 
-        model_local_path = pretrained_model_name_or_path / "autoencoder.pth"
-        ckpt_state_dict = torch.load(model_local_path, map_location=torch.device("cpu"))
-        video_vae.load_state_dict(ckpt_state_dict)
+            model_local_path = pretrained_model_name_or_path / "autoencoder.pth"
+            state_dict = torch.load(model_local_path, map_location=torch.device("cpu"))
 
-        statistics_local_path = (
-            pretrained_model_name_or_path / "per_channel_statistics.json"
-        )
-        if statistics_local_path.exists():
-            with open(statistics_local_path, "r") as file:
-                data = json.load(file)
-            transposed_data = list(zip(*data["data"]))
-            data_dict = {
-                col: torch.tensor(vals)
-                for col, vals in zip(data["columns"], transposed_data)
-            }
-            video_vae.register_buffer("std_of_means", data_dict["std-of-means"])
-            video_vae.register_buffer(
-                "mean_of_means",
-                data_dict.get(
+            statistics_local_path = (
+                pretrained_model_name_or_path / "per_channel_statistics.json"
+            )
+            if statistics_local_path.exists():
+                with open(statistics_local_path, "r") as file:
+                    data = json.load(file)
+                transposed_data = list(zip(*data["data"]))
+                data_dict = {
+                    col: torch.tensor(vals)
+                    for col, vals in zip(data["columns"], transposed_data)
+                }
+                std_of_means = data_dict["std-of-means"]
+                mean_of_means = data_dict.get(
                     "mean-of-means", torch.zeros_like(data_dict["std-of-means"])
-                ),
+                )
+                state_dict[f"{PER_CHANNEL_STATISTICS_PREFIX}std-of-means"] = (
+                    std_of_means
+                )
+                state_dict[f"{PER_CHANNEL_STATISTICS_PREFIX}mean-of-means"] = (
+                    mean_of_means
+                )
+
+        elif pretrained_model_name_or_path.is_dir():
+            config_path = pretrained_model_name_or_path / "vae" / "config.json"
+            with open(config_path, "r") as f:
+                config = make_hashable_key(json.load(f))
+
+            assert config in diffusers_and_ours_config_mapping, (
+                "Provided diffusers checkpoint config for VAE is not suppported. "
+                "We only support diffusers configs found in Lightricks/LTX-Video."
             )
 
+            config = diffusers_and_ours_config_mapping[config]
+
+            state_dict_path = (
+                pretrained_model_name_or_path
+                / "vae"
+                / "diffusion_pytorch_model.safetensors"
+            )
+
+            state_dict = {}
+            with safe_open(state_dict_path, framework="pt", device="cpu") as f:
+                for k in f.keys():
+                    state_dict[k] = f.get_tensor(k)
+            for key in list(state_dict.keys()):
+                new_key = key
+                for replace_key, rename_key in VAE_KEYS_RENAME_DICT.items():
+                    new_key = new_key.replace(replace_key, rename_key)
+
+                state_dict[new_key] = state_dict.pop(key)
+
+        elif pretrained_model_name_or_path.is_file() and str(
+            pretrained_model_name_or_path
+        ).endswith(".safetensors"):
+            state_dict = {}
+            with safe_open(
+                pretrained_model_name_or_path, framework="pt", device="cpu"
+            ) as f:
+                metadata = f.metadata()
+                for k in f.keys():
+                    state_dict[k] = f.get_tensor(k)
+            configs = json.loads(metadata["config"])
+            config = configs["vae"]
+
+        video_vae = cls.from_config(config)
+        if "torch_dtype" in kwargs:
+            video_vae.to(kwargs["torch_dtype"])
+        video_vae.load_state_dict(state_dict)
         return video_vae
 
     @staticmethod
@@ -165,11 +224,16 @@ class CausalVideoAutoencoder(AutoencoderKLWrapper):
         return json.dumps(self.config.__dict__)
 
     def load_state_dict(self, state_dict: Mapping[str, Any], strict: bool = True):
-        per_channel_statistics_prefix = "per_channel_statistics."
+        if any([key.startswith("vae.") for key in state_dict.keys()]):
+            state_dict = {
+                key.replace("vae.", ""): value
+                for key, value in state_dict.items()
+                if key.startswith("vae.")
+            }
         ckpt_state_dict = {
             key: value
             for key, value in state_dict.items()
-            if not key.startswith(per_channel_statistics_prefix)
+            if not key.startswith(PER_CHANNEL_STATISTICS_PREFIX)
         }
 
         model_keys = set(name for name, _ in self.named_parameters())
@@ -195,9 +259,9 @@ class CausalVideoAutoencoder(AutoencoderKLWrapper):
         super().load_state_dict(converted_state_dict, strict=strict)
 
         data_dict = {
-            key.removeprefix(per_channel_statistics_prefix): value
+            key.removeprefix(PER_CHANNEL_STATISTICS_PREFIX): value
             for key, value in state_dict.items()
-            if key.startswith(per_channel_statistics_prefix)
+            if key.startswith(PER_CHANNEL_STATISTICS_PREFIX)
         }
         if len(data_dict) > 0:
             self.register_buffer("std_of_means", data_dict["std-of-means"])

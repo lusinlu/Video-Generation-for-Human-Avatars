@@ -1,7 +1,11 @@
 # Adapted from: https://github.com/huggingface/diffusers/blob/v0.26.3/src/diffusers/models/transformers/transformer_2d.py
 import math
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Literal
+from typing import Any, Dict, List, Optional, Literal, Union
+import os
+import json
+import glob
+from pathlib import Path
 
 import torch
 from diffusers.configuration_utils import ConfigMixin, register_to_config
@@ -11,6 +15,8 @@ from diffusers.models.normalization import AdaLayerNormSingle
 from diffusers.utils import BaseOutput, is_torch_version
 from diffusers.utils import logging
 from torch import nn
+from safetensors import safe_open
+
 
 from ltx_video.models.transformers.attention import BasicTransformerBlock
 from ltx_video.models.transformers.embeddings import get_3d_sincos_pos_embed
@@ -304,6 +310,75 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
             cos_freq = torch.cat([cos_padding, cos_freq], dim=-1)
             sin_freq = torch.cat([sin_padding, sin_freq], dim=-1)
         return cos_freq.to(self.dtype), sin_freq.to(self.dtype)
+
+    def load_state_dict(
+        self,
+        state_dict: Dict,
+        *args,
+        **kwargs,
+    ):
+        if any([key.startswith("model.diffusion_model.") for key in state_dict.keys()]):
+            state_dict = {
+                key.replace("model.diffusion_model.", ""): value
+                for key, value in state_dict.items()
+                if key.startswith("model.diffusion_model.")
+            }
+        super().load_state_dict(state_dict, **kwargs)
+
+    @classmethod
+    def from_pretrained(
+        cls,
+        pretrained_model_path: Optional[Union[str, os.PathLike]],
+        *args,
+        **kwargs,
+    ):
+        pretrained_model_path = Path(pretrained_model_path)
+        if pretrained_model_path.is_dir():
+            config_path = pretrained_model_path / "transformer" / "config.json"
+            with open(config_path, "r") as f:
+                config = make_hashable_key(json.load(f))
+
+            assert config in diffusers_and_ours_config_mapping, (
+                "Provided diffusers checkpoint config for transformer is not suppported. "
+                "We only support diffusers configs found in Lightricks/LTX-Video."
+            )
+
+            config = diffusers_and_ours_config_mapping[config]
+            state_dict = {}
+            ckpt_paths = (
+                pretrained_model_path
+                / "transformer"
+                / "diffusion_pytorch_model*.safetensors"
+            )
+            dict_list = glob.glob(str(ckpt_paths))
+            for dict_path in dict_list:
+                part_dict = {}
+                with safe_open(dict_path, framework="pt", device="cpu") as f:
+                    for k in f.keys():
+                        part_dict[k] = f.get_tensor(k)
+                state_dict.update(part_dict)
+
+            for key in list(state_dict.keys()):
+                new_key = key
+                for replace_key, rename_key in TRANSFORMER_KEYS_RENAME_DICT.items():
+                    new_key = new_key.replace(replace_key, rename_key)
+                state_dict[new_key] = state_dict.pop(key)
+
+            transformer = cls.from_config(config)
+            transformer.load_state_dict(state_dict, strict=True)
+        elif pretrained_model_path.is_file() and str(pretrained_model_path).endswith(
+            ".safetensors"
+        ):
+            comfy_single_file_state_dict = {}
+            with safe_open(pretrained_model_path, framework="pt", device="cpu") as f:
+                metadata = f.metadata()
+                for k in f.keys():
+                    comfy_single_file_state_dict[k] = f.get_tensor(k)
+            configs = json.loads(metadata["config"])
+            transformer_config = configs["transformer"]
+            transformer = Transformer3DModel.from_config(transformer_config)
+            transformer.load_state_dict(comfy_single_file_state_dict)
+        return transformer
 
     def forward(
         self,

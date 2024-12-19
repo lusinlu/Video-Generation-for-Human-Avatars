@@ -1,5 +1,4 @@
 import argparse
-import json
 import os
 import random
 from datetime import datetime
@@ -8,7 +7,6 @@ from diffusers.utils import logging
 
 import imageio
 import numpy as np
-from safetensors import safe_open
 import torch
 import torch.nn.functional as F
 from PIL import Image
@@ -29,34 +27,6 @@ MAX_WIDTH = 1280
 MAX_NUM_FRAMES = 257
 
 
-def load_vae(vae_config, ckpt):
-    vae = CausalVideoAutoencoder.from_config(vae_config)
-    vae_state_dict = {
-        key.replace("vae.", ""): value
-        for key, value in ckpt.items()
-        if key.startswith("vae.")
-    }
-    vae.load_state_dict(vae_state_dict)
-    if torch.cuda.is_available():
-        vae = vae.cuda()
-    return vae.to(torch.bfloat16)
-
-
-def load_transformer(transformer_config, ckpt):
-    transformer = Transformer3DModel.from_config(transformer_config)
-    transformer_state_dict = {
-        key.replace("model.diffusion_model.", ""): value
-        for key, value in ckpt.items()
-        if key.startswith("model.diffusion_model.")
-    }
-    transformer.load_state_dict(transformer_state_dict, strict=True)
-    if torch.cuda.is_available():
-        transformer = transformer.cuda()
-    return transformer
-
-
-def load_scheduler(scheduler_config):
-    return RectifiedFlowScheduler.from_config(scheduler_config)
 
 
 def load_image_to_tensor_with_resize_and_crop(
@@ -233,9 +203,10 @@ def main():
     )
 
     parser.add_argument(
-        "--bfloat16",
-        action="store_true",
-        help="Denoise in bfloat16",
+        "--precision",
+        choices=["bfloat16", "mixed_precision"],
+        default="bfloat16",
+        help="Sets the precision for the transformer and tokenizer. Default is bfloat16. If 'mixed_precision' is enabled, it moves to mixed-precision.",
     )
 
     # Prompts
@@ -301,35 +272,28 @@ def main():
     else:
         media_items = None
 
-    # Paths for the separate mode directories
     ckpt_path = Path(args.ckpt_path)
-    ckpt = {}
-    with safe_open(ckpt_path, framework="pt", device="cpu") as f:
-        metadata = f.metadata()
-        for k in f.keys():
-            ckpt[k] = f.get_tensor(k)
+    vae = CausalVideoAutoencoder.from_pretrained(ckpt_path)
+    transformer = Transformer3DModel.from_pretrained(ckpt_path)
+    scheduler = RectifiedFlowScheduler.from_pretrained(ckpt_path)
 
-    configs = json.loads(metadata["config"])
-    vae_config = configs["vae"]
-    transformer_config = configs["transformer"]
-    scheduler_config = configs["scheduler"]
-
-    # Load models
-    vae = load_vae(vae_config, ckpt)
-    transformer = load_transformer(transformer_config, ckpt)
-    scheduler = load_scheduler(scheduler_config)
-    patchifier = SymmetricPatchifier(patch_size=1)
     text_encoder = T5EncoderModel.from_pretrained(
         "PixArt-alpha/PixArt-XL-2-1024-MS", subfolder="text_encoder"
     )
-    if torch.cuda.is_available():
-        text_encoder = text_encoder.to("cuda")
+    patchifier = SymmetricPatchifier(patch_size=1)
     tokenizer = T5Tokenizer.from_pretrained(
         "PixArt-alpha/PixArt-XL-2-1024-MS", subfolder="tokenizer"
     )
 
-    if args.bfloat16 and transformer.dtype != torch.bfloat16:
+    if torch.cuda.is_available():
+        transformer = transformer.cuda()
+        vae = vae.cuda()
+        text_encoder = text_encoder.cuda()
+
+    vae = vae.to(torch.bfloat16)
+    if args.precision == "bfloat16" and transformer.dtype != torch.bfloat16:
         transformer = transformer.to(torch.bfloat16)
+    text_encoder = text_encoder.to(torch.bfloat16)
 
     # Use submodels for the pipeline
     submodel_dict = {
@@ -378,7 +342,7 @@ def main():
             else ConditioningMethod.UNCONDITIONAL
         ),
         image_cond_noise_scale=args.image_cond_noise_scale,
-        mixed_precision=not args.bfloat16,
+        mixed_precision=(args.precision == "mixed_precision"),
     ).images
 
     # Crop the padded images to the desired resolution and number of frames
