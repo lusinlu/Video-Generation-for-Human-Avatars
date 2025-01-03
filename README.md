@@ -7,7 +7,7 @@ This is the official repository for LTX-Video.
 [Website](https://www.lightricks.com/ltxv) |
 [Model](https://huggingface.co/Lightricks/LTX-Video) |
 [Demo](https://fal.ai/models/fal-ai/ltx-video) |
-[Paper (Soon)](https://github.com/Lightricks/LTX-Video)
+[Paper](https://arxiv.org/abs/2501.00103)
 
 </div>
 
@@ -46,7 +46,6 @@ with realistic and diverse content.
 ## Online demo
 The model is accessible right away via following links:
 - [HF Playground](https://huggingface.co/spaces/Lightricks/LTX-Video-Playground)
-- [Replicate text-to-video and image-to-video](https://replicate.com/lightricks/ltx-video)
 - [Fal.ai text-to-video](https://fal.ai/models/fal-ai/ltx-video)
 - [Fal.ai image-to-video](https://fal.ai/models/fal-ai/ltx-video/image-to-video)
 
@@ -71,7 +70,7 @@ Then, download the model from [Hugging Face](https://huggingface.co/Lightricks/L
 from huggingface_hub import hf_hub_download
 
 model_path = 'PATH'   # The local directory to save downloaded checkpoint
-hf_hub_download(repo_id="Lightricks/LTX-Video", filename="ltx-video-2b-v0.9.1.safetensors", local_dir=model_path, local_dir_use_symlinks=False, repo_type='model')
+hf_hub_download(repo_id="Lightricks/LTX-Video", filename="ltx-video-2b-v0.9.safetensors", local_dir=model_path, local_dir_use_symlinks=False, repo_type='model')
 ```
 
 ### Inference
@@ -187,4 +186,15 @@ We are grateful for the following awesome projects when implementing LTX-Video:
 * [DiT](https://github.com/facebookresearch/DiT) and [PixArt-alpha](https://github.com/PixArt-alpha/PixArt-alpha): vision transformers for image generation.
 
 
-[//]: # (## Citation)
+## Citation
+
+📄 Our tech report is out! If you find our work helpful, please ⭐️ star the repository and cite our paper.
+
+```
+@article{HaCohen2024LTXVideo,
+  title={LTX-Video: Realtime Video Latent Diffusion},
+  author={HaCohen, Yoav and Chiprut, Nisan and Brazowski, Benny and Shalem, Daniel and Moshe, Dudu and Richardson, Eitan and Levin, Eran and Shiran, Guy and Zabari, Nir and Gordon, Ori and Panet, Poriya and Weissbuch, Sapir and Kulikov, Victor and Bitterman, Yaki and Melumian, Zeev and Bibi, Ofir},
+  journal={arXiv preprint arXiv:2501.00103},
+  year={2024}
+}
+```
