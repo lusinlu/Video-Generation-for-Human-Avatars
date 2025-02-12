@@ -1,7 +1,7 @@
 # Adapted from: https://github.com/huggingface/diffusers/blob/v0.26.3/src/diffusers/models/transformers/transformer_2d.py
 import math
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Literal, Union
+from typing import Any, Dict, List, Optional, Union
 import os
 import json
 import glob
@@ -19,7 +19,6 @@ from safetensors import safe_open
 
 
 from ltx_video.models.transformers.attention import BasicTransformerBlock
-from ltx_video.models.transformers.embeddings import get_3d_sincos_pos_embed
 from ltx_video.utils.skip_layer_strategy import SkipLayerStrategy
 
 from ltx_video.utils.diffusers_config_mapping import (
@@ -74,10 +73,9 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
         norm_eps: float = 1e-5,
         attention_type: str = "default",
         caption_channels: int = None,
-        project_to_2d_pos: bool = False,
         use_tpu_flash_attention: bool = False,  # if True uses the TPU attention offload ('flash attention')
         qk_norm: Optional[str] = None,
-        positional_embedding_type: str = "absolute",
+        positional_embedding_type: str = "rope",
         positional_embedding_theta: Optional[float] = None,
         positional_embedding_max_pos: Optional[List[int]] = None,
         timestep_scale_multiplier: Optional[float] = None,
@@ -91,11 +89,7 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
         self.attention_head_dim = attention_head_dim
         inner_dim = num_attention_heads * attention_head_dim
         self.inner_dim = inner_dim
-
-        self.project_to_2d_pos = project_to_2d_pos
-
         self.patchify_proj = nn.Linear(in_channels, inner_dim, bias=True)
-
         self.positional_embedding_type = positional_embedding_type
         self.positional_embedding_theta = positional_embedding_theta
         self.positional_embedding_max_pos = positional_embedding_max_pos
@@ -103,12 +97,7 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
         self.timestep_scale_multiplier = timestep_scale_multiplier
 
         if self.positional_embedding_type == "absolute":
-            embed_dim_3d = (
-                math.ceil((inner_dim / 2) * 3) if project_to_2d_pos else inner_dim
-            )
-            if self.project_to_2d_pos:
-                self.to_2d_proj = torch.nn.Linear(embed_dim_3d, inner_dim, bias=False)
-                self._init_to_2d_proj_weights(self.to_2d_proj)
+            raise ValueError("Absolute positional embedding is no longer supported")
         elif self.positional_embedding_type == "rope":
             if positional_embedding_theta is None:
                 raise ValueError(
@@ -197,79 +186,9 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
             mask[block_idx, ptb_index::num_conds] = 0
         return mask
 
-    def initialize(self, embedding_std: float, mode: Literal["ltx_video", "legacy"]):
-        def _basic_init(module):
-            if isinstance(module, nn.Linear):
-                torch.nn.init.xavier_uniform_(module.weight)
-                if module.bias is not None:
-                    nn.init.constant_(module.bias, 0)
-
-        self.apply(_basic_init)
-
-        # Initialize timestep embedding MLP:
-        nn.init.normal_(
-            self.adaln_single.emb.timestep_embedder.linear_1.weight, std=embedding_std
-        )
-        nn.init.normal_(
-            self.adaln_single.emb.timestep_embedder.linear_2.weight, std=embedding_std
-        )
-        nn.init.normal_(self.adaln_single.linear.weight, std=embedding_std)
-
-        if hasattr(self.adaln_single.emb, "resolution_embedder"):
-            nn.init.normal_(
-                self.adaln_single.emb.resolution_embedder.linear_1.weight,
-                std=embedding_std,
-            )
-            nn.init.normal_(
-                self.adaln_single.emb.resolution_embedder.linear_2.weight,
-                std=embedding_std,
-            )
-        if hasattr(self.adaln_single.emb, "aspect_ratio_embedder"):
-            nn.init.normal_(
-                self.adaln_single.emb.aspect_ratio_embedder.linear_1.weight,
-                std=embedding_std,
-            )
-            nn.init.normal_(
-                self.adaln_single.emb.aspect_ratio_embedder.linear_2.weight,
-                std=embedding_std,
-            )
-
-        # Initialize caption embedding MLP:
-        nn.init.normal_(self.caption_projection.linear_1.weight, std=embedding_std)
-        nn.init.normal_(self.caption_projection.linear_1.weight, std=embedding_std)
-
-        for block in self.transformer_blocks:
-            if mode.lower() == "ltx_video":
-                nn.init.constant_(block.attn1.to_out[0].weight, 0)
-                nn.init.constant_(block.attn1.to_out[0].bias, 0)
-
-            nn.init.constant_(block.attn2.to_out[0].weight, 0)
-            nn.init.constant_(block.attn2.to_out[0].bias, 0)
-
-            if mode.lower() == "ltx_video":
-                nn.init.constant_(block.ff.net[2].weight, 0)
-                nn.init.constant_(block.ff.net[2].bias, 0)
-
-        # Zero-out output layers:
-        nn.init.constant_(self.proj_out.weight, 0)
-        nn.init.constant_(self.proj_out.bias, 0)
-
     def _set_gradient_checkpointing(self, module, value=False):
         if hasattr(module, "gradient_checkpointing"):
             module.gradient_checkpointing = value
-
-    @staticmethod
-    def _init_to_2d_proj_weights(linear_layer):
-        input_features = linear_layer.weight.data.size(1)
-        output_features = linear_layer.weight.data.size(0)
-
-        # Start with a zero matrix
-        identity_like = torch.zeros((output_features, input_features))
-
-        # Fill the diagonal with 1's as much as possible
-        min_features = min(output_features, input_features)
-        identity_like[:min_features, :min_features] = torch.eye(min_features)
-        linear_layer.weight.data = identity_like.to(linear_layer.weight.data.device)
 
     def get_fractional_positions(self, indices_grid):
         fractional_positions = torch.stack(
@@ -496,16 +415,7 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
         if self.timestep_scale_multiplier:
             timestep = self.timestep_scale_multiplier * timestep
 
-        if self.positional_embedding_type == "absolute":
-            pos_embed_3d = self.get_absolute_pos_embed(indices_grid).to(
-                hidden_states.device
-            )
-            if self.project_to_2d_pos:
-                pos_embed = self.to_2d_proj(pos_embed_3d)
-            hidden_states = (hidden_states + pos_embed).to(hidden_states.dtype)
-            freqs_cis = None
-        elif self.positional_embedding_type == "rope":
-            freqs_cis = self.precompute_freqs_cis(indices_grid)
+        freqs_cis = self.precompute_freqs_cis(indices_grid)
 
         batch_size = hidden_states.shape[0]
         timestep, embedded_timestep = self.adaln_single(
@@ -592,19 +502,3 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
             return (hidden_states,)
 
         return Transformer3DModelOutput(sample=hidden_states)
-
-    def get_absolute_pos_embed(self, grid):
-        grid_np = grid[0].cpu().numpy()
-        embed_dim_3d = (
-            math.ceil((self.inner_dim / 2) * 3)
-            if self.project_to_2d_pos
-            else self.inner_dim
-        )
-        pos_embed = get_3d_sincos_pos_embed(  # (f h w)
-            embed_dim_3d,
-            grid_np,
-            h=int(max(grid_np[1]) + 1),
-            w=int(max(grid_np[2]) + 1),
-            f=int(max(grid_np[0] + 1)),
-        )
-        return torch.from_numpy(pos_embed).float().unsqueeze(0)
