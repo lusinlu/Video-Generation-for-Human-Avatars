@@ -177,31 +177,32 @@ def main():
         "--guidance_scale",
         type=float,
         default=3,
-        help="Guidance scale for the pipeline",
+        help="Guidance scale.",
     )
     parser.add_argument(
         "--stg_scale",
         type=float,
         default=1,
-        help="Spatiotemporal guidance scale for the pipeline. 0 to disable STG.",
+        help="Spatiotemporal guidance scale. 0 to disable STG.",
     )
     parser.add_argument(
         "--stg_rescale",
         type=float,
         default=0.7,
-        help="Spatiotemporal guidance rescaling scale for the pipeline. 1 to disable rescale.",
+        help="Spatiotemporal guidance rescaling scale. 1 to disable rescale.",
     )
     parser.add_argument(
         "--stg_mode",
         type=str,
-        default="stg_a",
-        help="Spatiotemporal guidance mode for the pipeline. Can be either stg_a or stg_r.",
+        default="attention",
+        help="Spatiotemporal guidance mode. "
+        "It can be one of 'attention' (default), 'residual', or 'transformer_block'.",
     )
     parser.add_argument(
         "--stg_skip_layers",
         type=str,
         default="19",
-        help="Attention layers to skip for spatiotemporal guidance. Comma separated list of integers.",
+        help="Layers to block for spatiotemporal guidance. Comma separated list of integers.",
     )
     parser.add_argument(
         "--image_cond_noise_scale",
@@ -348,11 +349,16 @@ def main():
 
     # Set spatiotemporal guidance
     skip_block_list = [int(x.strip()) for x in args.stg_skip_layers.split(",")]
-    skip_layer_strategy = (
-        SkipLayerStrategy.Attention
-        if args.stg_mode.lower() == "stg_a"
-        else SkipLayerStrategy.Residual
-    )
+    if args.stg_mode.lower() == "stg_a" or args.stg_mode.lower() == "attention":
+        skip_layer_strategy = SkipLayerStrategy.Attention
+    elif args.stg_mode.lower() == "stg_r" or args.stg_mode.lower() == "residual":
+        skip_layer_strategy = SkipLayerStrategy.Residual
+    elif (
+        args.stg_mode.lower() == "stg_t" or args.stg_mode.lower() == "transformer_block"
+    ):
+        skip_layer_strategy = SkipLayerStrategy.TransformerBlock
+    else:
+        raise ValueError(f"Invalid spatiotemporal guidance mode: {args.stg_mode}")
 
     # Use submodels for the pipeline
     submodel_dict = {
