@@ -272,6 +272,15 @@ def main():
         help="Offloading unnecessary computations to CPU.",
     )
 
+    # Add to the argument parser section
+    parser.add_argument(
+        "--sampler",
+        type=str,
+        choices=["uniform", "linear-quadratic"],
+        default=None,
+        help="Sampler to use for noise scheduling. Can be either 'uniform' or 'linear-quadratic'. If not specified, uses the sampler from the checkpoint.",
+    )
+
     logger = logging.get_logger(__name__)
 
     args = parser.parse_args()
@@ -327,7 +336,16 @@ def main():
     ckpt_path = Path(args.ckpt_path)
     vae = CausalVideoAutoencoder.from_pretrained(ckpt_path)
     transformer = Transformer3DModel.from_pretrained(ckpt_path)
-    scheduler = RectifiedFlowScheduler.from_pretrained(ckpt_path)
+
+    # Use constructor if sampler is specified, otherwise use from_pretrained
+    if args.sampler:
+        scheduler = RectifiedFlowScheduler(
+            sampler=(
+                "Uniform" if args.sampler.lower() == "uniform" else "LinearQuadratic"
+            )
+        )
+    else:
+        scheduler = RectifiedFlowScheduler.from_pretrained(ckpt_path)
 
     text_encoder = T5EncoderModel.from_pretrained(
         "PixArt-alpha/PixArt-XL-2-1024-MS", subfolder="text_encoder"
