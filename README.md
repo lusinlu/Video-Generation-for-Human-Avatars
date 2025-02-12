@@ -71,7 +71,7 @@ Then, download the model from [Hugging Face](https://huggingface.co/Lightricks/L
 from huggingface_hub import hf_hub_download
 
 model_path = 'PATH'   # The local directory to save downloaded checkpoint
-hf_hub_download(repo_id="Lightricks/LTX-Video", filename="ltx-video-2b-v0.9.safetensors", local_dir=model_path, local_dir_use_symlinks=False, repo_type='model')
+hf_hub_download(repo_id="Lightricks/LTX-Video", filename="ltx-video-2b-v0.9.1.safetensors", local_dir=model_path, local_dir_use_symlinks=False, repo_type='model')
 ```
 
 ### Inference
