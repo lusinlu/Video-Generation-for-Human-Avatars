@@ -48,6 +48,7 @@ The model is accessible right away via following links:
 - [HF Playground](https://huggingface.co/spaces/Lightricks/LTX-Video-Playground)
 - [Fal.ai text-to-video](https://fal.ai/models/fal-ai/ltx-video)
 - [Fal.ai image-to-video](https://fal.ai/models/fal-ai/ltx-video/image-to-video)
+- [Replicate text-to-video and image-to-video](https://replicate.com/lightricks/ltx-video)
 
 ## Run locally
 
