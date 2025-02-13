@@ -31,7 +31,15 @@ def get_total_gpu_memory():
     if torch.cuda.is_available():
         total_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)
         return total_memory
-    return None
+    return 0
+
+
+def get_device():
+    if torch.cuda.is_available():
+        return "cuda"
+    elif torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
 
 
 def load_image_to_tensor_with_resize_and_crop(
@@ -133,6 +141,8 @@ def seed_everething(seed: int):
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
+    if torch.backends.mps.is_available():
+        torch.mps.manual_seed(seed)
 
 
 def main():
@@ -231,7 +241,11 @@ def main():
     parser.add_argument(
         "--frame_rate", type=int, default=25, help="Frame rate for the output video"
     )
-
+    parser.add_argument(
+        "--device",
+        default=None,
+        help="Device to run inference on. If not specified, will automatically detect and use CUDA or MPS if available, else CPU.",
+    )
     parser.add_argument(
         "--precision",
         choices=["bfloat16", "mixed_precision"],
@@ -333,9 +347,24 @@ def main():
     else:
         media_items = None
 
+    device = args.device or get_device()
+
+    if device == "mps":
+        if torch.__version__ in ["2.4", "2.5"]:
+            logger.warning(
+                "PyTorch versions 2.4 and 2.5 have a known bug with MPS. Please update to PyTorch 2.6. More info: https://github.com/pytorch/pytorch/issues/141471"
+            )
+
+    transformer_dtype = (
+        torch.bfloat16 if args.precision == "bfloat16" else torch.float32
+    )
+
     ckpt_path = Path(args.ckpt_path)
-    vae = CausalVideoAutoencoder.from_pretrained(ckpt_path)
-    transformer = Transformer3DModel.from_pretrained(ckpt_path)
+    vae = CausalVideoAutoencoder.from_pretrained(
+        ckpt_path, device=device, torch_dtype=torch.bfloat16
+    )
+    transformer = Transformer3DModel.from_pretrained(ckpt_path, device=device)
+    transformer.to(transformer_dtype)
 
     # Use constructor if sampler is specified, otherwise use from_pretrained
     if args.sampler:
@@ -350,15 +379,15 @@ def main():
     text_encoder = T5EncoderModel.from_pretrained(
         "PixArt-alpha/PixArt-XL-2-1024-MS", subfolder="text_encoder"
     )
+    text_encoder.to(device)
     patchifier = SymmetricPatchifier(patch_size=1)
     tokenizer = T5Tokenizer.from_pretrained(
         "PixArt-alpha/PixArt-XL-2-1024-MS", subfolder="tokenizer"
     )
 
-    if torch.cuda.is_available():
-        transformer = transformer.cuda()
-        vae = vae.cuda()
-        text_encoder = text_encoder.cuda()
+    transformer = transformer.to(device)
+    vae = vae.to(device)
+    text_encoder = text_encoder.to(device)
 
     vae = vae.to(torch.bfloat16)
     if args.precision == "bfloat16" and transformer.dtype != torch.bfloat16:
@@ -389,8 +418,7 @@ def main():
     }
 
     pipeline = LTXVideoPipeline(**submodel_dict)
-    if torch.cuda.is_available():
-        pipeline = pipeline.to("cuda")
+    pipeline = pipeline.to(device)
 
     # Prepare input for the pipeline
     sample = {
@@ -401,9 +429,7 @@ def main():
         "media_items": media_items,
     }
 
-    generator = torch.Generator(
-        device="cuda" if torch.cuda.is_available() else "cpu"
-    ).manual_seed(args.seed)
+    generator = torch.Generator(device=device).manual_seed(args.seed)
 
     images = pipeline(
         num_inference_steps=args.num_inference_steps,

@@ -53,6 +53,7 @@ The model is accessible right away via following links:
 
 ### Installation
 The codebase was tested with Python 3.10.5, CUDA version 12.2, and supports PyTorch >= 2.1.2.
+On macos, MPS was tested with PyTorch 2.3.0, and should support PyTorch == 2.3 or >= 2.6.
 
 ```bash
 git clone https://github.com/Lightricks/LTX-Video.git
