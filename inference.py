@@ -45,9 +45,24 @@ def get_device():
 
 
 def load_image_to_tensor_with_resize_and_crop(
-    image_path, target_height=512, target_width=768
-):
-    image = Image.open(image_path).convert("RGB")
+    image_input: Union[str, Image.Image],
+    target_height: int = 512,
+    target_width: int = 768,
+) -> torch.Tensor:
+    """Load and process an image into a tensor.
+
+    Args:
+        image_input: Either a file path (str) or a PIL Image object
+        target_height: Desired height of output tensor
+        target_width: Desired width of output tensor
+    """
+    if isinstance(image_input, str):
+        image = Image.open(image_input).convert("RGB")
+    elif isinstance(image_input, Image.Image):
+        image = image_input
+    else:
+        raise ValueError("image_input must be either a file path or a PIL Image object")
+
     input_width, input_height = image.size
     aspect_ratio_target = target_width / target_height
     aspect_ratio_frame = input_width / input_height
