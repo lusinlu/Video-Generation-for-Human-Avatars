@@ -26,6 +26,8 @@ MAX_HEIGHT = 720
 MAX_WIDTH = 1280
 MAX_NUM_FRAMES = 257
 
+logger = logging.get_logger("LTX-Video")
+
 
 def get_total_gpu_memory():
     if torch.cuda.is_available():
@@ -294,8 +296,6 @@ def main():
         default=None,
         help="Sampler to use for noise scheduling. Can be either 'uniform' or 'linear-quadratic'. If not specified, uses the sampler from the checkpoint.",
     )
-
-    logger = logging.get_logger(__name__)
 
     args = parser.parse_args()
 
