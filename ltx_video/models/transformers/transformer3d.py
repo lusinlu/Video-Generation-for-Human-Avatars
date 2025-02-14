@@ -182,11 +182,13 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
 
     def create_skip_layer_mask(
         self,
-        skip_block_list: List[int],
         batch_size: int,
         num_conds: int,
         ptb_index: int,
+        skip_block_list: Optional[List[int]] = None,
     ):
+        if skip_block_list is None or len(skip_block_list) == 0:
+            return None
         num_layers = len(self.transformer_blocks)
         mask = torch.ones(
             (num_layers, batch_size * num_conds), device=self.device, dtype=self.dtype
@@ -518,11 +520,6 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
             batch_size, -1, embedded_timestep.shape[-1]
         )
 
-        if skip_layer_mask is None:
-            skip_layer_mask = torch.ones(
-                len(self.transformer_blocks), batch_size, device=hidden_states.device
-            )
-
         # 2. Blocks
         if self.caption_projection is not None:
             batch_size = hidden_states.shape[0]
@@ -556,7 +553,11 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
                     timestep,
                     cross_attention_kwargs,
                     class_labels,
-                    skip_layer_mask[block_idx],
+                    (
+                        skip_layer_mask[block_idx]
+                        if skip_layer_mask is not None
+                        else None
+                    ),
                     skip_layer_strategy,
                     **ckpt_kwargs,
                 )
@@ -570,7 +571,11 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
                     timestep=timestep,
                     cross_attention_kwargs=cross_attention_kwargs,
                     class_labels=class_labels,
-                    skip_layer_mask=skip_layer_mask[block_idx],
+                    skip_layer_mask=(
+                        skip_layer_mask[block_idx]
+                        if skip_layer_mask is not None
+                        else None
+                    ),
                     skip_layer_strategy=skip_layer_strategy,
                 )
 

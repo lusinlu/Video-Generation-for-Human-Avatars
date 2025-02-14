@@ -775,7 +775,7 @@ class LTXVideoPipeline(DiffusionPipeline):
         timesteps: List[int] = None,
         guidance_scale: float = 4.5,
         skip_layer_strategy: Optional[SkipLayerStrategy] = None,
-        skip_block_list: List[int] = None,
+        skip_block_list: Optional[List[int]] = None,
         stg_scale: float = 1.0,
         do_rescaling: bool = True,
         rescaling_scale: float = 0.7,
@@ -913,7 +913,7 @@ class LTXVideoPipeline(DiffusionPipeline):
         skip_layer_mask = None
         if do_spatio_temporal_guidance:
             skip_layer_mask = self.transformer.create_skip_layer_mask(
-                skip_block_list, batch_size, num_conds, 2
+                batch_size, num_conds, 2, skip_block_list
             )
 
         # 3. Encode input prompt
