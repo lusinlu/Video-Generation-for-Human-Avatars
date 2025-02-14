@@ -283,8 +283,11 @@ class LTXVideoPipeline(DiffusionPipeline):
         # See Section 3.1. of the paper.
         # FIXME: to be configured in config not hardecoded. Fix in separate PR with rest of config
         max_length = 128  # TPU supports only lengths multiple of 128
-        text_enc_device = next(self.text_encoder.parameters()).device
         if prompt_embeds is None:
+            assert (
+                self.text_encoder is not None
+            ), "You should provide either prompt_embeds or self.text_encoder should not be None,"
+            text_enc_device = next(self.text_encoder.parameters()).device
             prompt = self._text_preprocessing(prompt)
             text_inputs = self.tokenizer(
                 prompt,
@@ -752,7 +755,8 @@ class LTXVideoPipeline(DiffusionPipeline):
             )
 
         # 3. Encode input prompt
-        self.text_encoder = self.text_encoder.to(self._execution_device)
+        if self.text_encoder is not None:
+            self.text_encoder = self.text_encoder.to(self._execution_device)
 
         (
             prompt_embeds,
@@ -771,7 +775,7 @@ class LTXVideoPipeline(DiffusionPipeline):
             negative_prompt_attention_mask=negative_prompt_attention_mask,
         )
 
-        if offload_to_cpu:
+        if offload_to_cpu and self.text_encoder is not None:
             self.text_encoder = self.text_encoder.cpu()
 
         self.transformer = self.transformer.to(self._execution_device)
