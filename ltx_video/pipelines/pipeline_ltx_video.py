@@ -341,8 +341,8 @@ class LTXVideoPipeline(DiffusionPipeline):
 
         # get unconditional embeddings for classifier free guidance
         if do_classifier_free_guidance and negative_prompt_embeds is None:
-            uncond_tokens = [negative_prompt] * batch_size
-            uncond_tokens = self._text_preprocessing(uncond_tokens)
+            uncond_tokens = self._text_preprocessing(negative_prompt)
+            uncond_tokens = uncond_tokens * batch_size
             max_length = prompt_embeds.shape[1]
             uncond_input = self.tokenizer(
                 uncond_tokens,
