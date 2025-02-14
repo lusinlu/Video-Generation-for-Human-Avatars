@@ -308,8 +308,9 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
                     new_key = new_key.replace(replace_key, rename_key)
                 state_dict[new_key] = state_dict.pop(key)
 
-            transformer = cls.from_config(config)
-            transformer.load_state_dict(state_dict, strict=True)
+            with torch.device("meta"):
+                transformer = cls.from_config(config)
+            transformer.load_state_dict(state_dict, assign=True, strict=True)
         elif pretrained_model_path.is_file() and str(pretrained_model_path).endswith(
             ".safetensors"
         ):
@@ -320,8 +321,9 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
                     comfy_single_file_state_dict[k] = f.get_tensor(k)
             configs = json.loads(metadata["config"])
             transformer_config = configs["transformer"]
-            transformer = Transformer3DModel.from_config(transformer_config)
-            transformer.load_state_dict(comfy_single_file_state_dict)
+            with torch.device("meta"):
+                transformer = Transformer3DModel.from_config(transformer_config)
+            transformer.load_state_dict(comfy_single_file_state_dict, assign=True)
         return transformer
 
     def forward(
