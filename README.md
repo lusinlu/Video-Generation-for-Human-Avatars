@@ -149,6 +149,17 @@ A community project providing additional nodes for enhanced control over the LTX
 - **Community Discussion:** [Reddit Thread](https://www.reddit.com/r/StableDiffusion/comments/1h79ks2/fast_ltx_video_on_rtx_4060_and_other_ada_gpus/)
 - **Diffusers integration:** A diffusers integration for the 8-bit model is already out! [Details here](https://github.com/sayakpaul/q8-ltx-video)
 
+
+### TeaCache for LTX-Video 🍵 <a id="TeaCache"></a>
+
+**TeaCache** is a training-free caching approach that leverages timestep differences across model outputs to accelerate LTX-Video inference by up to 2x without significant visual quality degradation.
+
+- **Repository:** [TeaCache4LTX-Video](https://github.com/ali-vilab/TeaCache/tree/main/TeaCache4LTX-Video)
+- **Features:**
+  - 🚀 Speeds up LTX-Video inference.
+  - 📊 Adjustable trade-offs between speed (up to 2x) and visual quality using configurable parameters.
+  - 🛠️ No retraining required: Works directly with existing models.
+
 ### Your Contribution
 
 ...is welcome! If you have a project or tool that integrates with LTX-Video,
