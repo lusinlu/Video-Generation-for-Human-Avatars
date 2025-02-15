@@ -1,9 +1,7 @@
 # Adapted from: https://github.com/huggingface/diffusers/blob/main/src/diffusers/pipelines/pixart_alpha/pipeline_pixart_alpha.py
-import html
 import inspect
 import math
 import re
-import urllib.parse as ul
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
 
@@ -14,13 +12,7 @@ from diffusers.image_processor import VaeImageProcessor
 from diffusers.models import AutoencoderKL
 from diffusers.pipelines.pipeline_utils import DiffusionPipeline, ImagePipelineOutput
 from diffusers.schedulers import DPMSolverMultistepScheduler
-from diffusers.utils import (
-    BACKENDS_MAPPING,
-    deprecate,
-    is_bs4_available,
-    is_ftfy_available,
-    logging,
-)
+from diffusers.utils import deprecate, logging
 from diffusers.utils.torch_utils import randn_tensor
 from einops import rearrange
 from transformers import T5EncoderModel, T5Tokenizer
@@ -41,11 +33,6 @@ from ltx_video.utils.skip_layer_strategy import SkipLayerStrategy
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
-if is_bs4_available():
-    from bs4 import BeautifulSoup
-
-if is_ftfy_available():
-    import ftfy
 
 ASPECT_RATIO_1024_BIN = {
     "0.25": [512.0, 2048.0],
@@ -254,7 +241,6 @@ class LTXVideoPipeline(DiffusionPipeline):
         negative_prompt_embeds: Optional[torch.FloatTensor] = None,
         prompt_attention_mask: Optional[torch.FloatTensor] = None,
         negative_prompt_attention_mask: Optional[torch.FloatTensor] = None,
-        clean_caption: bool = False,
         **kwargs,
     ):
         r"""
@@ -278,8 +264,6 @@ class LTXVideoPipeline(DiffusionPipeline):
                 provided, text embeddings will be generated from `prompt` input argument.
             negative_prompt_embeds (`torch.FloatTensor`, *optional*):
                 Pre-generated negative text embeddings.
-            clean_caption (bool, defaults to `False`):
-                If `True`, the function will preprocess and clean the provided caption before encoding.
         """
 
         if "mask_feature" in kwargs:
@@ -299,9 +283,12 @@ class LTXVideoPipeline(DiffusionPipeline):
         # See Section 3.1. of the paper.
         # FIXME: to be configured in config not hardecoded. Fix in separate PR with rest of config
         max_length = 128  # TPU supports only lengths multiple of 128
-        text_enc_device = next(self.text_encoder.parameters()).device
         if prompt_embeds is None:
-            prompt = self._text_preprocessing(prompt, clean_caption=clean_caption)
+            assert (
+                self.text_encoder is not None
+            ), "You should provide either prompt_embeds or self.text_encoder should not be None,"
+            text_enc_device = next(self.text_encoder.parameters()).device
+            prompt = self._text_preprocessing(prompt)
             text_inputs = self.tokenizer(
                 prompt,
                 padding="max_length",
@@ -357,10 +344,8 @@ class LTXVideoPipeline(DiffusionPipeline):
 
         # get unconditional embeddings for classifier free guidance
         if do_classifier_free_guidance and negative_prompt_embeds is None:
-            uncond_tokens = [negative_prompt] * batch_size
-            uncond_tokens = self._text_preprocessing(
-                uncond_tokens, clean_caption=clean_caption
-            )
+            uncond_tokens = self._text_preprocessing(negative_prompt)
+            uncond_tokens = uncond_tokens * batch_size
             max_length = prompt_embeds.shape[1]
             uncond_input = self.tokenizer(
                 uncond_tokens,
@@ -507,157 +492,15 @@ class LTXVideoPipeline(DiffusionPipeline):
                     f" {negative_prompt_attention_mask.shape}."
                 )
 
-    # Copied from diffusers.pipelines.deepfloyd_if.pipeline_if.IFPipeline._text_preprocessing
-    def _text_preprocessing(self, text, clean_caption=False):
-        if clean_caption and not is_bs4_available():
-            logger.warn(
-                BACKENDS_MAPPING["bs4"][-1].format("Setting `clean_caption=True`")
-            )
-            logger.warn("Setting `clean_caption` to False...")
-            clean_caption = False
-
-        if clean_caption and not is_ftfy_available():
-            logger.warn(
-                BACKENDS_MAPPING["ftfy"][-1].format("Setting `clean_caption=True`")
-            )
-            logger.warn("Setting `clean_caption` to False...")
-            clean_caption = False
-
+    def _text_preprocessing(self, text):
         if not isinstance(text, (tuple, list)):
             text = [text]
 
         def process(text: str):
-            if clean_caption:
-                text = self._clean_caption(text)
-                text = self._clean_caption(text)
-            else:
-                text = text.lower().strip()
+            text = text.strip()
             return text
 
         return [process(t) for t in text]
-
-    # Copied from diffusers.pipelines.deepfloyd_if.pipeline_if.IFPipeline._clean_caption
-    def _clean_caption(self, caption):
-        caption = str(caption)
-        caption = ul.unquote_plus(caption)
-        caption = caption.strip().lower()
-        caption = re.sub("<person>", "person", caption)
-        # urls:
-        caption = re.sub(
-            r"\b((?:https?:(?:\/{1,3}|[a-zA-Z0-9%])|[a-zA-Z0-9.\-]+[.](?:com|co|ru|net|org|edu|gov|it)[\w/-]*\b\/?(?!@)))",  # noqa
-            "",
-            caption,
-        )  # regex for urls
-        caption = re.sub(
-            r"\b((?:www:(?:\/{1,3}|[a-zA-Z0-9%])|[a-zA-Z0-9.\-]+[.](?:com|co|ru|net|org|edu|gov|it)[\w/-]*\b\/?(?!@)))",  # noqa
-            "",
-            caption,
-        )  # regex for urls
-        # html:
-        caption = BeautifulSoup(caption, features="html.parser").text
-
-        # @<nickname>
-        caption = re.sub(r"@[\w\d]+\b", "", caption)
-
-        # 31C0—31EF CJK Strokes
-        # 31F0—31FF Katakana Phonetic Extensions
-        # 3200—32FF Enclosed CJK Letters and Months
-        # 3300—33FF CJK Compatibility
-        # 3400—4DBF CJK Unified Ideographs Extension A
-        # 4DC0—4DFF Yijing Hexagram Symbols
-        # 4E00—9FFF CJK Unified Ideographs
-        caption = re.sub(r"[\u31c0-\u31ef]+", "", caption)
-        caption = re.sub(r"[\u31f0-\u31ff]+", "", caption)
-        caption = re.sub(r"[\u3200-\u32ff]+", "", caption)
-        caption = re.sub(r"[\u3300-\u33ff]+", "", caption)
-        caption = re.sub(r"[\u3400-\u4dbf]+", "", caption)
-        caption = re.sub(r"[\u4dc0-\u4dff]+", "", caption)
-        caption = re.sub(r"[\u4e00-\u9fff]+", "", caption)
-        #######################################################
-
-        # все виды тире / all types of dash --> "-"
-        caption = re.sub(
-            r"[\u002D\u058A\u05BE\u1400\u1806\u2010-\u2015\u2E17\u2E1A\u2E3A\u2E3B\u2E40\u301C\u3030\u30A0\uFE31\uFE32\uFE58\uFE63\uFF0D]+",  # noqa
-            "-",
-            caption,
-        )
-
-        # кавычки к одному стандарту
-        caption = re.sub(r"[`´«»“”¨]", '"', caption)
-        caption = re.sub(r"[‘’]", "'", caption)
-
-        # &quot;
-        caption = re.sub(r"&quot;?", "", caption)
-        # &amp
-        caption = re.sub(r"&amp", "", caption)
-
-        # ip adresses:
-        caption = re.sub(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}", " ", caption)
-
-        # article ids:
-        caption = re.sub(r"\d:\d\d\s+$", "", caption)
-
-        # \n
-        caption = re.sub(r"\\n", " ", caption)
-
-        # "#123"
-        caption = re.sub(r"#\d{1,3}\b", "", caption)
-        # "#12345.."
-        caption = re.sub(r"#\d{5,}\b", "", caption)
-        # "123456.."
-        caption = re.sub(r"\b\d{6,}\b", "", caption)
-        # filenames:
-        caption = re.sub(
-            r"[\S]+\.(?:png|jpg|jpeg|bmp|webp|eps|pdf|apk|mp4)", "", caption
-        )
-
-        #
-        caption = re.sub(r"[\"\']{2,}", r'"', caption)  # """AUSVERKAUFT"""
-        caption = re.sub(r"[\.]{2,}", r" ", caption)  # """AUSVERKAUFT"""
-
-        caption = re.sub(
-            self.bad_punct_regex, r" ", caption
-        )  # ***AUSVERKAUFT***, #AUSVERKAUFT
-        caption = re.sub(r"\s+\.\s+", r" ", caption)  # " . "
-
-        # this-is-my-cute-cat / this_is_my_cute_cat
-        regex2 = re.compile(r"(?:\-|\_)")
-        if len(re.findall(regex2, caption)) > 3:
-            caption = re.sub(regex2, " ", caption)
-
-        caption = ftfy.fix_text(caption)
-        caption = html.unescape(html.unescape(caption))
-
-        caption = re.sub(r"\b[a-zA-Z]{1,3}\d{3,15}\b", "", caption)  # jc6640
-        caption = re.sub(r"\b[a-zA-Z]+\d+[a-zA-Z]+\b", "", caption)  # jc6640vc
-        caption = re.sub(r"\b\d+[a-zA-Z]+\d+\b", "", caption)  # 6640vc231
-
-        caption = re.sub(r"(worldwide\s+)?(free\s+)?shipping", "", caption)
-        caption = re.sub(r"(free\s)?download(\sfree)?", "", caption)
-        caption = re.sub(r"\bclick\b\s(?:for|on)\s\w+", "", caption)
-        caption = re.sub(
-            r"\b(?:png|jpg|jpeg|bmp|webp|eps|pdf|apk|mp4)(\simage[s]?)?", "", caption
-        )
-        caption = re.sub(r"\bpage\s+\d+\b", "", caption)
-
-        caption = re.sub(
-            r"\b\d*[a-zA-Z]+\d+[a-zA-Z]+\d+[a-zA-Z\d]*\b", r" ", caption
-        )  # j2d1a2a...
-
-        caption = re.sub(r"\b\d+\.?\d*[xх×]\d+\.?\d*\b", "", caption)
-
-        caption = re.sub(r"\b\s+\:\s+", r": ", caption)
-        caption = re.sub(r"(\D[,\./])\b", r"\1 ", caption)
-        caption = re.sub(r"\s+", " ", caption)
-
-        caption.strip()
-
-        caption = re.sub(r"^[\"\']([\w\W]+)[\"\']$", r"\1", caption)
-        caption = re.sub(r"^[\'\_,\-\:;]", r"", caption)
-        caption = re.sub(r"[\'\_,\-\:\-\+]$", r"", caption)
-        caption = re.sub(r"^\.\S+$", "", caption)
-
-        return caption.strip()
 
     def image_cond_noise_update(
         self,
@@ -705,12 +548,10 @@ class LTXVideoPipeline(DiffusionPipeline):
 
         if latents is None:
             latents = randn_tensor(
-                shape, generator=generator, device=generator.device, dtype=dtype
+                shape, generator=generator, device=device, dtype=dtype
             )
         elif latents_mask is not None:
-            noise = randn_tensor(
-                shape, generator=generator, device=generator.device, dtype=dtype
-            )
+            noise = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
             latents = latents * latents_mask[..., None] + noise * (
                 1 - latents_mask[..., None]
             )
@@ -775,7 +616,7 @@ class LTXVideoPipeline(DiffusionPipeline):
         timesteps: List[int] = None,
         guidance_scale: float = 4.5,
         skip_layer_strategy: Optional[SkipLayerStrategy] = None,
-        skip_block_list: List[int] = None,
+        skip_block_list: Optional[List[int]] = None,
         stg_scale: float = 1.0,
         do_rescaling: bool = True,
         rescaling_scale: float = 0.7,
@@ -790,7 +631,6 @@ class LTXVideoPipeline(DiffusionPipeline):
         output_type: Optional[str] = "pil",
         return_dict: bool = True,
         callback_on_step_end: Optional[Callable[[int, int, Dict], None]] = None,
-        clean_caption: bool = True,
         media_items: Optional[torch.FloatTensor] = None,
         decode_timestep: Union[List[float], float] = 0.0,
         decode_noise_scale: Optional[List[float]] = None,
@@ -856,10 +696,6 @@ class LTXVideoPipeline(DiffusionPipeline):
                 with the following arguments: `callback_on_step_end(self: DiffusionPipeline, step: int, timestep: int,
                 callback_kwargs: Dict)`. `callback_kwargs` will include a list of all tensors as specified by
                 `callback_on_step_end_tensor_inputs`.
-            clean_caption (`bool`, *optional*, defaults to `True`):
-                Whether or not to clean the caption before creating embeddings. Requires `beautifulsoup4` and `ftfy` to
-                be installed. If the dependencies are not installed, the embeddings will be created from the raw
-                prompt.
             use_resolution_binning (`bool` defaults to `True`):
                 If set to `True`, the requested height and width are first mapped to the closest resolutions using
                 `ASPECT_RATIO_1024_BIN`. After the produced latents are decoded into images, they are resized back to
@@ -913,11 +749,12 @@ class LTXVideoPipeline(DiffusionPipeline):
         skip_layer_mask = None
         if do_spatio_temporal_guidance:
             skip_layer_mask = self.transformer.create_skip_layer_mask(
-                skip_block_list, batch_size, num_conds, 2
+                batch_size, num_conds, 2, skip_block_list
             )
 
         # 3. Encode input prompt
-        self.text_encoder = self.text_encoder.to(self._execution_device)
+        if self.text_encoder is not None:
+            self.text_encoder = self.text_encoder.to(self._execution_device)
 
         (
             prompt_embeds,
@@ -934,10 +771,9 @@ class LTXVideoPipeline(DiffusionPipeline):
             negative_prompt_embeds=negative_prompt_embeds,
             prompt_attention_mask=prompt_attention_mask,
             negative_prompt_attention_mask=negative_prompt_attention_mask,
-            clean_caption=clean_caption,
         )
 
-        if offload_to_cpu:
+        if offload_to_cpu and self.text_encoder is not None:
             self.text_encoder = self.text_encoder.cpu()
 
         self.transformer = self.transformer.to(self._execution_device)

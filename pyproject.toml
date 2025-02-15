@@ -31,3 +31,6 @@ inference-script = [
     "matplotlib",
     "imageio[ffmpeg]"
 ]
+test = [
+    "pytest",
+]

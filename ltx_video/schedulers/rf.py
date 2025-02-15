@@ -22,6 +22,28 @@ from ltx_video.utils.diffusers_config_mapping import (
 )
 
 
+def linear_quadratic_schedule(num_steps, threshold_noise=0.025, linear_steps=None):
+    if linear_steps is None:
+        linear_steps = num_steps // 2
+    linear_sigma_schedule = [
+        i * threshold_noise / linear_steps for i in range(linear_steps)
+    ]
+    threshold_noise_step_diff = linear_steps - threshold_noise * num_steps
+    quadratic_steps = num_steps - linear_steps
+    quadratic_coef = threshold_noise_step_diff / (linear_steps * quadratic_steps**2)
+    linear_coef = threshold_noise / linear_steps - 2 * threshold_noise_step_diff / (
+        quadratic_steps**2
+    )
+    const = quadratic_coef * (linear_steps**2)
+    quadratic_sigma_schedule = [
+        quadratic_coef * (i**2) + linear_coef * i + const
+        for i in range(linear_steps, num_steps)
+    ]
+    sigma_schedule = linear_sigma_schedule + quadratic_sigma_schedule + [1.0]
+    sigma_schedule = [1.0 - x for x in sigma_schedule]
+    return torch.tensor(sigma_schedule[:-1])
+
+
 def simple_diffusion_resolution_dependent_timestep_shift(
     samples: Tensor,
     timesteps: Tensor,
@@ -157,19 +179,25 @@ class RectifiedFlowScheduler(SchedulerMixin, ConfigMixin, TimestepShifter):
         shifting: Optional[str] = None,
         base_resolution: int = 32**2,
         target_shift_terminal: Optional[float] = None,
+        sampler: Optional[str] = "Uniform",
     ):
         super().__init__()
         self.init_noise_sigma = 1.0
         self.num_inference_steps = None
-        self.timesteps = self.sigmas = torch.linspace(
-            1, 1 / num_train_timesteps, num_train_timesteps
-        )
-        self.delta_timesteps = self.timesteps - torch.cat(
-            [self.timesteps[1:], torch.zeros_like(self.timesteps[-1:])]
-        )
+        self.sampler = sampler
         self.shifting = shifting
         self.base_resolution = base_resolution
         self.target_shift_terminal = target_shift_terminal
+        self.timesteps = self.sigmas = self.get_initial_timesteps(num_train_timesteps)
+        self.delta_timesteps = self.timesteps - torch.cat(
+            [self.timesteps[1:], torch.zeros_like(self.timesteps[-1:])]
+        )
+
+    def get_initial_timesteps(self, num_timesteps: int) -> Tensor:
+        if self.sampler == "Uniform":
+            return torch.linspace(1, 1 / num_timesteps, num_timesteps)
+        elif self.sampler == "LinearQuadratic":
+            return linear_quadratic_schedule(num_timesteps)
 
     def shift_timesteps(self, samples: Tensor, timesteps: Tensor) -> Tensor:
         if self.shifting == "SD3":
@@ -197,10 +225,8 @@ class RectifiedFlowScheduler(SchedulerMixin, ConfigMixin, TimestepShifter):
             device (`Union[str, torch.device]`, *optional*): The device to which the timesteps tensor will be moved.
         """
         num_inference_steps = min(self.config.num_train_timesteps, num_inference_steps)
-        timesteps = torch.linspace(1, 1 / num_inference_steps, num_inference_steps).to(
-            device
-        )
-        self.timesteps = self.shift_timesteps(samples, timesteps)
+        self.timesteps = self.get_initial_timesteps(num_inference_steps).to(device)
+        self.timesteps = self.shift_timesteps(samples, self.timesteps)
         self.delta_timesteps = self.timesteps - torch.cat(
             [self.timesteps[1:], torch.zeros_like(self.timesteps[-1:])]
         )

@@ -219,6 +219,8 @@ class BasicTransformerBlock(nn.Module):
         # 0. Self-Attention
         batch_size = hidden_states.shape[0]
 
+        original_hidden_states = hidden_states
+
         norm_hidden_states = self.norm1(hidden_states)
 
         # Apply ada_norm_single
@@ -307,6 +309,15 @@ class BasicTransformerBlock(nn.Module):
         hidden_states = ff_output + hidden_states
         if hidden_states.ndim == 4:
             hidden_states = hidden_states.squeeze(1)
+
+        if (
+            skip_layer_mask is not None
+            and skip_layer_strategy == SkipLayerStrategy.TransformerBlock
+        ):
+            skip_layer_mask = skip_layer_mask.view(-1, 1, 1)
+            hidden_states = hidden_states * skip_layer_mask + original_hidden_states * (
+                1.0 - skip_layer_mask
+            )
 
         return hidden_states
 

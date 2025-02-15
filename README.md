@@ -48,11 +48,13 @@ The model is accessible right away via following links:
 - [HF Playground](https://huggingface.co/spaces/Lightricks/LTX-Video-Playground)
 - [Fal.ai text-to-video](https://fal.ai/models/fal-ai/ltx-video)
 - [Fal.ai image-to-video](https://fal.ai/models/fal-ai/ltx-video/image-to-video)
+- [Replicate text-to-video and image-to-video](https://replicate.com/lightricks/ltx-video)
 
 ## Run locally
 
 ### Installation
 The codebase was tested with Python 3.10.5, CUDA version 12.2, and supports PyTorch >= 2.1.2.
+On macos, MPS was tested with PyTorch 2.3.0, and should support PyTorch == 2.3 or >= 2.6.
 
 ```bash
 git clone https://github.com/Lightricks/LTX-Video.git
@@ -70,7 +72,7 @@ Then, download the model from [Hugging Face](https://huggingface.co/Lightricks/L
 from huggingface_hub import hf_hub_download
 
 model_path = 'PATH'   # The local directory to save downloaded checkpoint
-hf_hub_download(repo_id="Lightricks/LTX-Video", filename="ltx-video-2b-v0.9.safetensors", local_dir=model_path, local_dir_use_symlinks=False, repo_type='model')
+hf_hub_download(repo_id="Lightricks/LTX-Video", filename="ltx-video-2b-v0.9.1.safetensors", local_dir=model_path, local_dir_use_symlinks=False, repo_type='model')
 ```
 
 ### Inference
@@ -94,6 +96,8 @@ To use our model with ComfyUI, please follow the instructions at [https://github
 
 ## Diffusers Integration
 To use our model with the Diffusers Python library, check out the [official documentation](https://huggingface.co/docs/diffusers/main/en/api/pipelines/ltx_video).
+
+Diffusers also support an 8-bit version of LTX-Video, [see details below](#ltx-videoq8)
 
 # Model User Guide
 
@@ -133,7 +137,7 @@ A community project providing additional nodes for enhanced control over the LTX
   - 🖼️ **Interpolation and Frame Setting:** Nodes for precise control of latents per frame. [Example workflow](https://github.com/logtd/ComfyUI-LTXTricks/blob/main/example_workflows/example_ltx_interpolation.json).
 
 
-### LTX-VideoQ8 🎱
+### LTX-VideoQ8 🎱 <a id="ltx-videoq8"></a>
 
 **LTX-VideoQ8** is an 8-bit optimized version of [LTX-Video](https://github.com/Lightricks/LTX-Video), designed for faster performance on NVIDIA ADA GPUs.
 
@@ -143,6 +147,18 @@ A community project providing additional nodes for enhanced control over the LTX
   - 🎥 Generate 720x480x121 videos in under a minute on RTX 4060 (8GB VRAM)
   - 🛠️ Fine-tune 2B transformer models with precalculated latents
 - **Community Discussion:** [Reddit Thread](https://www.reddit.com/r/StableDiffusion/comments/1h79ks2/fast_ltx_video_on_rtx_4060_and_other_ada_gpus/)
+- **Diffusers integration:** A diffusers integration for the 8-bit model is already out! [Details here](https://github.com/sayakpaul/q8-ltx-video)
+
+
+### TeaCache for LTX-Video 🍵 <a id="TeaCache"></a>
+
+**TeaCache** is a training-free caching approach that leverages timestep differences across model outputs to accelerate LTX-Video inference by up to 2x without significant visual quality degradation.
+
+- **Repository:** [TeaCache4LTX-Video](https://github.com/ali-vilab/TeaCache/tree/main/TeaCache4LTX-Video)
+- **Features:**
+  - 🚀 Speeds up LTX-Video inference.
+  - 📊 Adjustable trade-offs between speed (up to 2x) and visual quality using configurable parameters.
+  - 🛠️ No retraining required: Works directly with existing models.
 
 ### Your Contribution
 
@@ -174,7 +190,7 @@ An experimental training framework with pipeline parallelism, enabling fine-tuni
 
 Want to work on cutting-edge AI research and make a real impact on millions of users worldwide?
 
-At **Lightricks**, an AI-first company, we’re revolutionizing how visual content is created.
+At **Lightricks**, an AI-first company, we're revolutionizing how visual content is created.
 
 If you are passionate about AI, computer vision, and video generation, we would love to hear from you!
 
