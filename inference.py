@@ -221,9 +221,9 @@ def main():
     parser.add_argument(
         "--stg_mode",
         type=str,
-        default="attention",
+        default="attention_values",
         help="Spatiotemporal guidance mode. "
-        "It can be one of 'attention' (default), 'residual', or 'transformer_block'.",
+        "It can be one of 'attention_values' (default), 'attension_skip', 'residual', or 'transformer_block'.",
     )
     parser.add_argument(
         "--stg_skip_layers",
@@ -464,8 +464,10 @@ def infer(
 
     # Set spatiotemporal guidance
     skip_block_list = [int(x.strip()) for x in stg_skip_layers.split(",")]
-    if stg_mode.lower() == "stg_a" or stg_mode.lower() == "attention":
-        skip_layer_strategy = SkipLayerStrategy.Attention
+    if stg_mode.lower() == "stg_as" or stg_mode.lower() == "attention_skip":
+        skip_layer_strategy = SkipLayerStrategy.AttentionSkip
+    elif stg_mode.lower() == "stg_av" or stg_mode.lower() == "attention_values":
+        skip_layer_strategy = SkipLayerStrategy.AttentionValues
     elif stg_mode.lower() == "stg_r" or stg_mode.lower() == "residual":
         skip_layer_strategy = SkipLayerStrategy.Residual
     elif stg_mode.lower() == "stg_t" or stg_mode.lower() == "transformer_block":

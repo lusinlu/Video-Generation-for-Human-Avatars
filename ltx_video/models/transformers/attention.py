@@ -1013,6 +1013,7 @@ class AttnProcessor2_0:
                 query = attn.apply_rotary_emb(query, freqs_cis)
 
         value = attn.to_v(encoder_hidden_states)
+        value_for_stg = value
 
         inner_dim = key.shape[-1]
         head_dim = inner_dim // attn.heads
@@ -1070,9 +1071,16 @@ class AttnProcessor2_0:
 
         if (
             skip_layer_mask is not None
-            and skip_layer_strategy == SkipLayerStrategy.Attention
+            and skip_layer_strategy == SkipLayerStrategy.AttentionSkip
         ):
             hidden_states = hidden_states_a * skip_layer_mask + hidden_states * (
+                1.0 - skip_layer_mask
+            )
+        elif (
+            skip_layer_mask is not None
+            and skip_layer_strategy == SkipLayerStrategy.AttentionValues
+        ):
+            hidden_states = hidden_states_a * skip_layer_mask + value_for_stg * (
                 1.0 - skip_layer_mask
             )
         else:
