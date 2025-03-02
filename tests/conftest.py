@@ -12,10 +12,12 @@ def test_paths(request, pytestconfig):
             "text_encoder_model_name_or_path"
         )
         input_image_path = pytestconfig.getoption("input_image_path")
+        input_video_path = pytestconfig.getoption("input_video_path")
 
         config = {
             "ckpt_path": ckpt_path,
             "input_image_path": input_image_path,
+            "input_video_path": input_video_path,
             "output_path": output_path,
             "text_encoder_model_name_or_path": text_encoder_model_name_or_path,
         }
@@ -49,6 +51,12 @@ def pytest_addoption(parser):
     parser.addoption(
         "--input_image_path",
         action="store",
-        default="tests/utils/car.png",
+        default="tests/utils/woman.jpeg",
         help="Path to input image file.",
+    )
+    parser.addoption(
+        "--input_video_path",
+        action="store",
+        default="tests/utils/woman.mp4",
+        help="Path to input video file.",
     )

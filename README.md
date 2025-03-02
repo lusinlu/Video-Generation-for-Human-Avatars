@@ -88,7 +88,20 @@ python inference.py --ckpt_path 'PATH' --prompt "PROMPT" --height HEIGHT --width
 #### For image-to-video generation:
 
 ```bash
-python inference.py --ckpt_path 'PATH' --prompt "PROMPT" --input_image_path IMAGE_PATH --height HEIGHT --width WIDTH --num_frames NUM_FRAMES --seed SEED
+python inference.py --ckpt_path 'PATH' --prompt "PROMPT" --conditioning_media_paths IMAGE_PATH --conditioning_start_frames 0 --height HEIGHT --width WIDTH --num_frames NUM_FRAMES --seed SEED
+```
+
+#### Extending a video:
+
+```bash
+python inference.py --ckpt_path 'PATH' --prompt "PROMPT" --conditioning_media_paths VIDEO_PATH --conditioning_start_frames START_FRAME --height HEIGHT --width WIDTH --num_frames NUM_FRAMES --seed SEED
+```
+
+
+#### For video generation with multiple conditions:
+
+```bash
+python inference.py --ckpt_path 'PATH' --prompt "PROMPT" --conditioning_media_paths IMAGE_PATH1 VIDEO_PATH2 --conditioning_start_frames 0 SECOND_COND_START_FRAME --height HEIGHT --width WIDTH --num_frames NUM_FRAMES --seed SEED
 ```
 
 ## ComfyUI Integration

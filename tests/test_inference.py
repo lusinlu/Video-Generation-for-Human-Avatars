@@ -11,15 +11,39 @@ def pytest_make_parametrize_id(config, val, argname):
 
 
 @pytest.mark.parametrize(
-    "do_txt_to_image", [True, False], ids=lambda x: f"do_txt_to_image={x}"
+    "conditioning_test_mode",
+    ["unconditional", "first-frame", "first-sequence", "sequence-and-frame"],
+    ids=lambda x: f"conditioning_test_mode={x}",
 )
-def test_infer_runs_on_real_path(test_paths, do_txt_to_image):
-    # Update the input_image_path in test_paths if there is an override
-    if do_txt_to_image:
-        test_paths["input_image_path"] = None
+def test_infer_runs_on_real_path(test_paths, conditioning_test_mode):
+    conditioning_params = {}
+    if conditioning_test_mode == "unconditional":
+        pass
+    elif conditioning_test_mode == "first-frame":
+        conditioning_params["conditioning_media_paths"] = [
+            test_paths["input_image_path"]
+        ]
+        conditioning_params["conditioning_start_frames"] = [0]
+    elif conditioning_test_mode == "first-sequence":
+        conditioning_params["conditioning_media_paths"] = [
+            test_paths["input_video_path"]
+        ]
+        conditioning_params["conditioning_start_frames"] = [0]
+    elif conditioning_test_mode == "sequence-and-frame":
+        conditioning_params["conditioning_media_paths"] = [
+            test_paths["input_video_path"],
+            test_paths["input_image_path"],
+        ]
+        conditioning_params["conditioning_start_frames"] = [16, 32]
+    else:
+        raise ValueError(f"Unknown conditioning mode: {conditioning_test_mode}")
+    test_paths = {
+        k: v
+        for k, v in test_paths.items()
+        if k not in ["input_image_path", "input_video_path"]
+    }
 
     params = {
-        "input_video_path": None,
         "seed": 42,
         "num_inference_steps": 1,
         "num_images_per_prompt": 1,
@@ -29,19 +53,18 @@ def test_infer_runs_on_real_path(test_paths, do_txt_to_image):
         "stg_mode": "attention_values",
         "stg_skip_layers": "1,2,3",
         "image_cond_noise_scale": 0.15,
-        "height": 480,
-        "width": 704,
+        "height": 288,
+        "width": 512,
         "num_frames": 33,
         "frame_rate": 25,
         "precision": "bfloat16",
         "decode_timestep": 0.05,
         "decode_noise_scale": 0.025,
-        "prompt": "A vintage yellow car drives along a wet mountain road, its rear wheels kicking up a light spray as it moves. The camera follows close behind, capturing the curvature of the road as it winds through rocky cliffs and lush green hills. The sunlight pierces through scattered clouds, reflecting off the car's rain-speckled surface, creating a dynamic, cinematic moment. "
-        "The scene conveys a sense of freedom and exploration as the car disappears into the distance.",
+        "prompt": "A young woman with wavy, shoulder-length light brown hair stands outdoors on a foggy day. She wears a cozy pink turtleneck sweater, with a serene expression and piercing blue eyes. A wooden fence and a misty, grassy field fade into the background, evoking a calm and introspective mood.",
         "negative_prompt": "worst quality, inconsistent motion, blurry, jittery, distorted",
         "offload_to_cpu": False,
     }
-    infer(**{**test_paths, **params})
+    infer(**{**conditioning_params, **test_paths, **params})
 
 
 def get_device():
@@ -71,7 +94,6 @@ def test_pipeline_on_batch(test_paths):
     )
 
     params = {
-        "input_video_path": None,
         "seed": 42,
         "num_inference_steps": 2,
         "num_images_per_prompt": 1,
@@ -82,8 +104,8 @@ def test_pipeline_on_batch(test_paths):
         "skip_layer_strategy": SkipLayerStrategy.AttentionValues,
         "skip_block_list": [1, 2],
         "image_cond_noise_scale": 0.15,
-        "height": 480,
-        "width": 704,
+        "height": 288,
+        "width": 512,
         "num_frames": 1,
         "frame_rate": 25,
         "decode_timestep": 0.05,
@@ -113,7 +135,6 @@ def test_pipeline_on_batch(test_paths):
 
         images = pipeline(
             prompt=prompts,
-            device=device,
             generator=generators,
             **sample,
             **params,

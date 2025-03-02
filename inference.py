@@ -3,12 +3,12 @@ import os
 import random
 from datetime import datetime
 from pathlib import Path
-from diffusers.utils import logging
-from typing import Optional, Union
+from typing import List, Optional, Union
 
 import imageio
 import numpy as np
 import torch
+from diffusers.utils import logging
 from PIL import Image
 from transformers import T5EncoderModel, T5Tokenizer
 
@@ -17,9 +17,8 @@ from ltx_video.models.autoencoders.causal_video_autoencoder import (
 )
 from ltx_video.models.transformers.symmetric_patchifier import SymmetricPatchifier
 from ltx_video.models.transformers.transformer3d import Transformer3DModel
-from ltx_video.pipelines.pipeline_ltx_video import LTXVideoPipeline
+from ltx_video.pipelines.pipeline_ltx_video import ConditioningItem, LTXVideoPipeline
 from ltx_video.schedulers.rf import RectifiedFlowScheduler
-from ltx_video.utils.conditioning_method import ConditioningMethod
 from ltx_video.utils.skip_layer_strategy import SkipLayerStrategy
 
 MAX_HEIGHT = 720
@@ -175,14 +174,6 @@ def main():
         help="Path to a safetensors file that contains all model parts.",
     )
     parser.add_argument(
-        "--input_video_path",
-        type=str,
-        help="Path to the input video file (first frame used)",
-    )
-    parser.add_argument(
-        "--input_image_path", type=str, help="Path to the input image file"
-    )
-    parser.add_argument(
         "--output_path",
         type=str,
         default=None,
@@ -310,7 +301,25 @@ def main():
         help="Local path or model identifier for both the tokenizer and text encoder. Defaults to pretrained model on Hugging Face.",
     )
 
-    # Add to the argument parser section
+    # Conditioning arguments
+    parser.add_argument(
+        "--conditioning_media_paths",
+        type=str,
+        nargs="*",
+        help="List of paths to conditioning media (images or videos). Each path will be used as a conditioning item.",
+    )
+    parser.add_argument(
+        "--conditioning_strengths",
+        type=float,
+        nargs="*",
+        help="List of conditioning strengths (between 0 and 1) for each conditioning item. Must match the number of conditioning items.",
+    )
+    parser.add_argument(
+        "--conditioning_start_frames",
+        type=int,
+        nargs="*",
+        help="List of frame indices where each conditioning item should be applied. Must match the number of conditioning items.",
+    )
     parser.add_argument(
         "--sampler",
         type=str,
@@ -335,7 +344,7 @@ def create_ltx_video_pipeline(
     assert os.path.exists(
         ckpt_path
     ), f"Ckpt path provided (--ckpt_path) {ckpt_path} does not exist"
-    vae = CausalVideoAutoencoder.from_pretrained(ckpt_path, torch_dtype=torch.bfloat16)
+    vae = CausalVideoAutoencoder.from_pretrained(ckpt_path)
     transformer = Transformer3DModel.from_pretrained(ckpt_path)
 
     # Use constructor if sampler is specified, otherwise use from_pretrained
@@ -401,23 +410,47 @@ def infer(
     negative_prompt: str,
     offload_to_cpu: bool,
     text_encoder_model_name_or_path: str,
-    input_image_path: Optional[str] = None,
+    conditioning_media_paths: Optional[List[str]] = None,
+    conditioning_strengths: Optional[List[float]] = None,
+    conditioning_start_frames: Optional[List[int]] = None,
     sampler: Optional[str] = None,
     device: Optional[str] = None,
     **kwargs,
 ):
-    device = device or get_device()
+    if kwargs.get("input_image_path", None):
+        logger.warning(
+            "Please use conditioning_media_paths instead of input_image_path."
+        )
+        assert not conditioning_media_paths and not conditioning_start_frames
+        conditioning_media_paths = [kwargs["input_image_path"]]
+        conditioning_start_frames = [0]
 
-    if device == "mps":
-        if torch.__version__ in ["2.4", "2.5"]:
-            logger.warning(
-                "PyTorch versions 2.4 and 2.5 have a known bug with MPS. Please update to PyTorch 2.6. More info: https://github.com/pytorch/pytorch/issues/141471"
+    # Validate conditioning arguments
+    if conditioning_media_paths:
+        # Use default strengths of 1.0
+        if not conditioning_strengths:
+            conditioning_strengths = [1.0] * len(conditioning_media_paths)
+        if not conditioning_start_frames:
+            raise ValueError(
+                "If `conditioning_media_paths` is provided, "
+                "`conditioning_start_frames` must also be provided"
+            )
+        if len(conditioning_media_paths) != len(conditioning_strengths) or len(
+            conditioning_media_paths
+        ) != len(conditioning_start_frames):
+            raise ValueError(
+                "`conditioning_media_paths`, `conditioning_strengths`, "
+                "and `conditioning_start_frames` must have the same length"
+            )
+        if any(s < 0 or s > 1 for s in conditioning_strengths):
+            raise ValueError("All conditioning strengths must be between 0 and 1")
+        if any(f < 0 or f >= num_frames for f in conditioning_start_frames):
+            raise ValueError(
+                f"All conditioning start frames must be between 0 and {num_frames-1}"
             )
 
-    generator = torch.Generator(device=device).manual_seed(seed)
-
     seed_everething(seed)
-    if offload_to_cpu and not device == "cpu":
+    if offload_to_cpu and not torch.cuda.is_available():
         logger.warning(
             "offload_to_cpu is set to True, but offloading will not occur since the model is already running on CPU."
         )
@@ -451,23 +484,27 @@ def infer(
         device=kwargs.get("device", get_device()),
     )
 
-    conditioning_item = (
+    conditioning_items = (
         prepare_conditioning(
-            path=input_image_path,
+            conditioning_media_paths=conditioning_media_paths,
+            conditioning_strengths=conditioning_strengths,
+            conditioning_start_frames=conditioning_start_frames,
             height=height,
             width=width,
+            num_frames=num_frames,
             padding=padding,
+            pipeline=pipeline,
         )
-        if input_image_path
+        if conditioning_media_paths
         else None
     )
 
     # Set spatiotemporal guidance
     skip_block_list = [int(x.strip()) for x in stg_skip_layers.split(",")]
-    if stg_mode.lower() == "stg_as" or stg_mode.lower() == "attention_skip":
-        skip_layer_strategy = SkipLayerStrategy.AttentionSkip
-    elif stg_mode.lower() == "stg_av" or stg_mode.lower() == "attention_values":
+    if stg_mode.lower() == "stg_av" or stg_mode.lower() == "attention_values":
         skip_layer_strategy = SkipLayerStrategy.AttentionValues
+    elif stg_mode.lower() == "stg_as" or stg_mode.lower() == "attention_skip":
+        skip_layer_strategy = SkipLayerStrategy.AttentionSkip
     elif stg_mode.lower() == "stg_r" or stg_mode.lower() == "residual":
         skip_layer_strategy = SkipLayerStrategy.Residual
     elif stg_mode.lower() == "stg_t" or stg_mode.lower() == "transformer_block":
@@ -475,16 +512,16 @@ def infer(
     else:
         raise ValueError(f"Invalid spatiotemporal guidance mode: {stg_mode}")
 
-    skip_block_list = [int(x.strip()) for x in stg_skip_layers.split(",")]
-
     # Prepare input for the pipeline
     sample = {
         "prompt": prompt,
         "prompt_attention_mask": None,
         "negative_prompt": negative_prompt,
         "negative_prompt_attention_mask": None,
-        "media_items": conditioning_item,
     }
+
+    device = device or get_device()
+    generator = torch.Generator(device=device).manual_seed(seed)
 
     images = pipeline(
         num_inference_steps=num_inference_steps,
@@ -503,13 +540,9 @@ def infer(
         num_frames=num_frames_padded,
         frame_rate=frame_rate,
         **sample,
+        conditioning_items=conditioning_items,
         is_video=True,
         vae_per_channel_normalize=True,
-        conditioning_method=(
-            ConditioningMethod.FIRST_FRAME
-            if conditioning_item is not None
-            else ConditioningMethod.UNCONDITIONAL
-        ),
         image_cond_noise_scale=image_cond_noise_scale,
         decode_timestep=decode_timestep,
         decode_noise_scale=decode_noise_scale,
@@ -565,27 +598,76 @@ def infer(
 
 
 def prepare_conditioning(
-    path: str,
+    conditioning_media_paths: List[str],
+    conditioning_strengths: List[float],
+    conditioning_start_frames: List[int],
     height: int,
     width: int,
+    num_frames: int,
     padding: tuple[int, int, int, int],
-) -> torch.Tensor:
+    pipeline: LTXVideoPipeline,
+) -> Optional[List[ConditioningItem]]:
     """Prepare conditioning items based on input media paths and their parameters.
 
     Args:
-        path: Path to conditioning image
-        strength: Strength for the conditioning media
+        conditioning_media_paths: List of paths to conditioning media (images or videos)
+        conditioning_strengths: List of conditioning strengths for each media item
+        conditioning_start_frames: List of frame indices where each item should be applied
         height: Height of the output frames
         width: Width of the output frames
+        num_frames: Number of frames in the output video
         padding: Padding to apply to the frames
+        pipeline: LTXVideoPipeline object used for condition video trimming
 
     Returns:
         A list of ConditioningItem objects.
     """
+    conditioning_items = []
+    for path, strength, start_frame in zip(
+        conditioning_media_paths, conditioning_strengths, conditioning_start_frames
+    ):
+        # Check if the path points to an image or video
+        is_video = any(
+            path.lower().endswith(ext) for ext in [".mp4", ".avi", ".mov", ".mkv"]
+        )
 
-    frame_tensor = load_image_to_tensor_with_resize_and_crop(path, height, width)
-    frame_tensor = torch.nn.functional.pad(frame_tensor, padding)
-    frame_tensor
+        if is_video:
+            reader = imageio.get_reader(path)
+            orig_num_input_frames = reader.count_frames()
+            num_input_frames = pipeline.trim_conditioning_sequence(
+                start_frame, orig_num_input_frames, num_frames
+            )
+            if num_input_frames < orig_num_input_frames:
+                logger.warning(
+                    f"Trimming conditioning video {path} from {orig_num_input_frames} to {num_input_frames} frames."
+                )
+
+            # Read and preprocess the relevant frames from the video file.
+            frames = []
+            for i in range(num_input_frames):
+                frame = Image.fromarray(reader.get_data(i))
+                frame_tensor = load_image_to_tensor_with_resize_and_crop(
+                    frame, height, width
+                )
+                frame_tensor = torch.nn.functional.pad(frame_tensor, padding)
+                frames.append(frame_tensor)
+            reader.close()
+
+            # Stack frames along the temporal dimension
+            video_tensor = torch.cat(frames, dim=2)
+            conditioning_items.append(
+                ConditioningItem(video_tensor, start_frame, strength)
+            )
+        else:  # Input image
+            frame_tensor = load_image_to_tensor_with_resize_and_crop(
+                path, height, width
+            )
+            frame_tensor = torch.nn.functional.pad(frame_tensor, padding)
+            conditioning_items.append(
+                ConditioningItem(frame_tensor, start_frame, strength)
+            )
+
+    return conditioning_items
 
 
 if __name__ == "__main__":

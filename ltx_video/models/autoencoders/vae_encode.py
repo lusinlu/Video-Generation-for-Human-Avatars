@@ -1,3 +1,4 @@
+from typing import Tuple
 import torch
 from diffusers import AutoencoderKL
 from einops import rearrange
@@ -184,6 +185,44 @@ def get_vae_size_scale_factor(vae: AutoencoderKL) -> float:
         )
 
     return (temporal, spatial, spatial)
+
+
+def latent_to_pixel_coords(
+    latent_coords: Tensor, vae: AutoencoderKL, causal_fix: bool = False
+) -> Tensor:
+    """
+    Converts latent coordinates to pixel coordinates by scaling them according to the VAE's
+    configuration.
+
+    Args:
+        latent_coords (Tensor): A tensor of shape [batch_size, 3, num_latents]
+        containing the latent corner coordinates of each token.
+        vae (AutoencoderKL): The VAE model
+        causal_fix (bool): Whether to take into account the different temporal scale
+            of the first frame. Default = False for backwards compatibility.
+    Returns:
+        Tensor: A tensor of pixel coordinates corresponding to the input latent coordinates.
+    """
+
+    scale_factors = get_vae_size_scale_factor(vae)
+    causal_fix = isinstance(vae, CausalVideoAutoencoder) and causal_fix
+    pixel_coords = latent_to_pixel_coords_from_factors(
+        latent_coords, scale_factors, causal_fix
+    )
+    return pixel_coords
+
+
+def latent_to_pixel_coords_from_factors(
+    latent_coords: Tensor, scale_factors: Tuple, causal_fix: bool = False
+) -> Tensor:
+    pixel_coords = (
+        latent_coords
+        * torch.tensor(scale_factors, device=latent_coords.device)[None, :, None]
+    )
+    if causal_fix:
+        # Fix temporal scale for first frame to 1 due to causality
+        pixel_coords[:, 0] = (pixel_coords[:, 0] + 1 - scale_factors[0]).clamp(min=0)
+    return pixel_coords
 
 
 def normalize_latents(
