@@ -36,12 +36,14 @@ class AutoencoderKLWrapper(ModelMixin, ConfigMixin):
         dims: int = 2,
         sample_size=512,
         use_quant_conv: bool = True,
+        normalize_latent_channels: bool = False,
     ):
         super().__init__()
 
         # pass init params to Encoder
         self.encoder = encoder
         self.use_quant_conv = use_quant_conv
+        self.normalize_latent_channels = normalize_latent_channels
 
         # pass init params to Decoder
         quant_dims = 2 if dims == 2 else 3
@@ -56,6 +58,14 @@ class AutoencoderKLWrapper(ModelMixin, ConfigMixin):
         else:
             self.quant_conv = nn.Identity()
             self.post_quant_conv = nn.Identity()
+
+        if normalize_latent_channels:
+            if dims == 2:
+                self.latent_norm_out = nn.BatchNorm2d(latent_channels, affine=False)
+            else:
+                self.latent_norm_out = nn.BatchNorm3d(latent_channels, affine=False)
+        else:
+            self.latent_norm_out = nn.Identity()
         self.use_z_tiling = False
         self.use_hw_tiling = False
         self.dims = dims
@@ -248,9 +258,35 @@ class AutoencoderKLWrapper(ModelMixin, ConfigMixin):
 
         return AutoencoderKLOutput(latent_dist=posterior)
 
+    def _normalize_latent_channels(self, z: torch.FloatTensor) -> torch.FloatTensor:
+        if isinstance(self.latent_norm_out, nn.BatchNorm3d):
+            _, c, _, _, _ = z.shape
+            z = torch.cat(
+                [
+                    self.latent_norm_out(z[:, : c // 2, :, :, :]),
+                    z[:, c // 2 :, :, :, :],
+                ],
+                dim=1,
+            )
+        elif isinstance(self.latent_norm_out, nn.BatchNorm2d):
+            raise NotImplementedError("BatchNorm2d not supported")
+        return z
+
+    def _unnormalize_latent_channels(self, z: torch.FloatTensor) -> torch.FloatTensor:
+        if isinstance(self.latent_norm_out, nn.BatchNorm3d):
+            running_mean = self.latent_norm_out.running_mean.view(1, -1, 1, 1, 1)
+            running_var = self.latent_norm_out.running_var.view(1, -1, 1, 1, 1)
+            eps = self.latent_norm_out.eps
+
+            z = z * torch.sqrt(running_var + eps) + running_mean
+        elif isinstance(self.latent_norm_out, nn.BatchNorm3d):
+            raise NotImplementedError("BatchNorm2d not supported")
+        return z
+
     def _encode(self, x: torch.FloatTensor) -> AutoencoderKLOutput:
         h = self.encoder(x)
         moments = self.quant_conv(h)
+        moments = self._normalize_latent_channels(moments)
         return moments
 
     def _decode(
@@ -259,6 +295,7 @@ class AutoencoderKLWrapper(ModelMixin, ConfigMixin):
         target_shape=None,
         timestep: Optional[torch.Tensor] = None,
     ) -> Union[DecoderOutput, torch.FloatTensor]:
+        z = self._unnormalize_latent_channels(z)
         z = self.post_quant_conv(z)
         if "timestep" in self.decoder_params:
             dec = self.decoder(z, target_shape=target_shape, timestep=timestep)
