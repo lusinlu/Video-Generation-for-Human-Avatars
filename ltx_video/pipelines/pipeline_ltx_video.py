@@ -297,7 +297,7 @@ class LTXVideoPipeline(DiffusionPipeline):
 
         # See Section 3.1. of the paper.
         # FIXME: to be configured in config not hardecoded. Fix in separate PR with rest of config
-        max_length = 128  # TPU supports only lengths multiple of 128
+        max_length = 256  # TPU supports only lengths multiple of 128
         if prompt_embeds is None:
             assert (
                 self.text_encoder is not None
