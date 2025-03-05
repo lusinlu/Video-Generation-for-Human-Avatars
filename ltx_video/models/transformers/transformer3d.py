@@ -79,6 +79,7 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
         positional_embedding_theta: Optional[float] = None,
         positional_embedding_max_pos: Optional[List[int]] = None,
         timestep_scale_multiplier: Optional[float] = None,
+        causal_temporal_positioning: bool = False,  # For backward compatibility, will be deprecated
     ):
         super().__init__()
         self.use_tpu_flash_attention = (

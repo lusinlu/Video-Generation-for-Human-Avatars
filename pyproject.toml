@@ -18,10 +18,11 @@ classifiers = [
 dependencies = [
     "torch>=2.1.0",
     "diffusers>=0.28.2",
-    "transformers>=4.44.2",
+    "transformers>=4.47.2",
     "sentencepiece>=0.1.96",
     "huggingface-hub~=0.25.2",
-    "einops"
+    "einops",
+    "timm"
 ]
 
 [project.optional-dependencies]

@@ -133,9 +133,12 @@ class CausalVideoAutoencoder(AutoencoderKLWrapper):
             "latent_log_var", "per_channel" if double_z else "none"
         )
         use_quant_conv = config.get("use_quant_conv", True)
+        normalize_latent_channels = config.get("normalize_latent_channels", False)
 
-        if use_quant_conv and latent_log_var == "uniform":
-            raise ValueError("uniform latent_log_var requires use_quant_conv=False")
+        if use_quant_conv and latent_log_var in ["uniform", "constant"]:
+            raise ValueError(
+                f"latent_log_var={latent_log_var} requires use_quant_conv=False"
+            )
 
         encoder = Encoder(
             dims=config["dims"],
@@ -145,6 +148,8 @@ class CausalVideoAutoencoder(AutoencoderKLWrapper):
             patch_size=config.get("patch_size", 1),
             latent_log_var=latent_log_var,
             norm_layer=config.get("norm_layer", "group_norm"),
+            base_channels=config.get("encoder_base_channels", 128),
+            spatial_padding_mode=config.get("spatial_padding_mode", "zeros"),
         )
 
         decoder = Decoder(
@@ -156,6 +161,8 @@ class CausalVideoAutoencoder(AutoencoderKLWrapper):
             norm_layer=config.get("norm_layer", "group_norm"),
             causal=config.get("causal_decoder", False),
             timestep_conditioning=config.get("timestep_conditioning", False),
+            base_channels=config.get("decoder_base_channels", 128),
+            spatial_padding_mode=config.get("spatial_padding_mode", "zeros"),
         )
 
         dims = config["dims"]
@@ -165,6 +172,7 @@ class CausalVideoAutoencoder(AutoencoderKLWrapper):
             latent_channels=config["latent_channels"],
             dims=dims,
             use_quant_conv=use_quant_conv,
+            normalize_latent_channels=normalize_latent_channels,
         )
 
     @property
@@ -185,6 +193,7 @@ class CausalVideoAutoencoder(AutoencoderKLWrapper):
             use_quant_conv=self.use_quant_conv,
             causal_decoder=self.decoder.causal,
             timestep_conditioning=self.decoder.timestep_conditioning,
+            normalize_latent_channels=self.normalize_latent_channels,
         )
 
     @property
@@ -202,7 +211,13 @@ class CausalVideoAutoencoder(AutoencoderKLWrapper):
                 [
                     block
                     for block in self.encoder.blocks_desc
-                    if block[0] in ["compress_space", "compress_all"]
+                    if block[0]
+                    in [
+                        "compress_space",
+                        "compress_all",
+                        "compress_all_res",
+                        "compress_space_res",
+                    ]
                 ]
             )
             * self.encoder.patch_size
@@ -214,7 +229,13 @@ class CausalVideoAutoencoder(AutoencoderKLWrapper):
             [
                 block
                 for block in self.encoder.blocks_desc
-                if block[0] in ["compress_time", "compress_all"]
+                if block[0]
+                in [
+                    "compress_time",
+                    "compress_all",
+                    "compress_all_res",
+                    "compress_space_res",
+                ]
             ]
         )
 
@@ -236,7 +257,7 @@ class CausalVideoAutoencoder(AutoencoderKLWrapper):
             if not key.startswith(PER_CHANNEL_STATISTICS_PREFIX)
         }
 
-        model_keys = set(name for name, _ in self.named_parameters())
+        model_keys = set(name for name, _ in self.named_modules())
 
         key_mapping = {
             ".resnets.": ".res_blocks.",
@@ -248,7 +269,8 @@ class CausalVideoAutoencoder(AutoencoderKLWrapper):
             for k, v in key_mapping.items():
                 key = key.replace(k, v)
 
-            if "norm" in key and key not in model_keys:
+            key_prefix = ".".join(key.split(".")[:-1])
+            if "norm" in key and key_prefix not in model_keys:
                 logger.info(
                     f"Removing key {key} from state_dict as it is not present in the model"
                 )
@@ -311,7 +333,7 @@ class Encoder(nn.Module):
         norm_layer (`str`, *optional*, defaults to `group_norm`):
             The normalization layer to use. Can be either `group_norm` or `pixel_norm`.
         latent_log_var (`str`, *optional*, defaults to `per_channel`):
-            The number of channels for the log variance. Can be either `per_channel`, `uniform`, or `none`.
+            The number of channels for the log variance. Can be either `per_channel`, `uniform`, `constant` or `none`.
     """
 
     def __init__(
@@ -325,6 +347,7 @@ class Encoder(nn.Module):
         patch_size: Union[int, Tuple[int]] = 1,
         norm_layer: str = "group_norm",  # group_norm, pixel_norm
         latent_log_var: str = "per_channel",
+        spatial_padding_mode: str = "zeros",
     ):
         super().__init__()
         self.patch_size = patch_size
@@ -344,6 +367,7 @@ class Encoder(nn.Module):
             stride=1,
             padding=1,
             causal=True,
+            spatial_padding_mode=spatial_padding_mode,
         )
 
         self.down_blocks = nn.ModuleList([])
@@ -361,6 +385,7 @@ class Encoder(nn.Module):
                     resnet_eps=1e-6,
                     resnet_groups=norm_num_groups,
                     norm_layer=norm_layer,
+                    spatial_padding_mode=spatial_padding_mode,
                 )
             elif block_name == "res_x_y":
                 output_channel = block_params.get("multiplier", 2) * output_channel
@@ -371,6 +396,7 @@ class Encoder(nn.Module):
                     eps=1e-6,
                     groups=norm_num_groups,
                     norm_layer=norm_layer,
+                    spatial_padding_mode=spatial_padding_mode,
                 )
             elif block_name == "compress_time":
                 block = make_conv_nd(
@@ -380,6 +406,7 @@ class Encoder(nn.Module):
                     kernel_size=3,
                     stride=(2, 1, 1),
                     causal=True,
+                    spatial_padding_mode=spatial_padding_mode,
                 )
             elif block_name == "compress_space":
                 block = make_conv_nd(
@@ -389,6 +416,7 @@ class Encoder(nn.Module):
                     kernel_size=3,
                     stride=(1, 2, 2),
                     causal=True,
+                    spatial_padding_mode=spatial_padding_mode,
                 )
             elif block_name == "compress_all":
                 block = make_conv_nd(
@@ -398,6 +426,7 @@ class Encoder(nn.Module):
                     kernel_size=3,
                     stride=(2, 2, 2),
                     causal=True,
+                    spatial_padding_mode=spatial_padding_mode,
                 )
             elif block_name == "compress_all_x_y":
                 output_channel = block_params.get("multiplier", 2) * output_channel
@@ -408,6 +437,34 @@ class Encoder(nn.Module):
                     kernel_size=3,
                     stride=(2, 2, 2),
                     causal=True,
+                    spatial_padding_mode=spatial_padding_mode,
+                )
+            elif block_name == "compress_all_res":
+                output_channel = block_params.get("multiplier", 2) * output_channel
+                block = SpaceToDepthDownsample(
+                    dims=dims,
+                    in_channels=input_channel,
+                    out_channels=output_channel,
+                    stride=(2, 2, 2),
+                    spatial_padding_mode=spatial_padding_mode,
+                )
+            elif block_name == "compress_space_res":
+                output_channel = block_params.get("multiplier", 2) * output_channel
+                block = SpaceToDepthDownsample(
+                    dims=dims,
+                    in_channels=input_channel,
+                    out_channels=output_channel,
+                    stride=(1, 2, 2),
+                    spatial_padding_mode=spatial_padding_mode,
+                )
+            elif block_name == "compress_time_res":
+                output_channel = block_params.get("multiplier", 2) * output_channel
+                block = SpaceToDepthDownsample(
+                    dims=dims,
+                    in_channels=input_channel,
+                    out_channels=output_channel,
+                    stride=(2, 1, 1),
+                    spatial_padding_mode=spatial_padding_mode,
                 )
             else:
                 raise ValueError(f"unknown block: {block_name}")
@@ -431,10 +488,18 @@ class Encoder(nn.Module):
             conv_out_channels *= 2
         elif latent_log_var == "uniform":
             conv_out_channels += 1
+        elif latent_log_var == "constant":
+            conv_out_channels += 1
         elif latent_log_var != "none":
             raise ValueError(f"Invalid latent_log_var: {latent_log_var}")
         self.conv_out = make_conv_nd(
-            dims, output_channel, conv_out_channels, 3, padding=1, causal=True
+            dims,
+            output_channel,
+            conv_out_channels,
+            3,
+            padding=1,
+            causal=True,
+            spatial_padding_mode=spatial_padding_mode,
         )
 
         self.gradient_checkpointing = False
@@ -476,6 +541,15 @@ class Encoder(nn.Module):
                 sample = torch.cat([sample, repeated_last_channel], dim=1)
             else:
                 raise ValueError(f"Invalid input shape: {sample.shape}")
+        elif self.latent_log_var == "constant":
+            sample = sample[:, :-1, ...]
+            approx_ln_0 = (
+                -30
+            )  # this is the minimal clamp value in DiagonalGaussianDistribution objects
+            sample = torch.cat(
+                [sample, torch.ones_like(sample, device=sample.device) * approx_ln_0],
+                dim=1,
+            )
 
         return sample
 
@@ -518,6 +592,7 @@ class Decoder(nn.Module):
         norm_layer: str = "group_norm",
         causal: bool = True,
         timestep_conditioning: bool = False,
+        spatial_padding_mode: str = "zeros",
     ):
         super().__init__()
         self.patch_size = patch_size
@@ -543,6 +618,7 @@ class Decoder(nn.Module):
             stride=1,
             padding=1,
             causal=True,
+            spatial_padding_mode=spatial_padding_mode,
         )
 
         self.up_blocks = nn.ModuleList([])
@@ -562,6 +638,7 @@ class Decoder(nn.Module):
                     norm_layer=norm_layer,
                     inject_noise=block_params.get("inject_noise", False),
                     timestep_conditioning=timestep_conditioning,
+                    spatial_padding_mode=spatial_padding_mode,
                 )
             elif block_name == "attn_res_x":
                 block = UNetMidBlock3D(
@@ -573,6 +650,7 @@ class Decoder(nn.Module):
                     inject_noise=block_params.get("inject_noise", False),
                     timestep_conditioning=timestep_conditioning,
                     attention_head_dim=block_params["attention_head_dim"],
+                    spatial_padding_mode=spatial_padding_mode,
                 )
             elif block_name == "res_x_y":
                 output_channel = output_channel // block_params.get("multiplier", 2)
@@ -585,14 +663,21 @@ class Decoder(nn.Module):
                     norm_layer=norm_layer,
                     inject_noise=block_params.get("inject_noise", False),
                     timestep_conditioning=False,
+                    spatial_padding_mode=spatial_padding_mode,
                 )
             elif block_name == "compress_time":
                 block = DepthToSpaceUpsample(
-                    dims=dims, in_channels=input_channel, stride=(2, 1, 1)
+                    dims=dims,
+                    in_channels=input_channel,
+                    stride=(2, 1, 1),
+                    spatial_padding_mode=spatial_padding_mode,
                 )
             elif block_name == "compress_space":
                 block = DepthToSpaceUpsample(
-                    dims=dims, in_channels=input_channel, stride=(1, 2, 2)
+                    dims=dims,
+                    in_channels=input_channel,
+                    stride=(1, 2, 2),
+                    spatial_padding_mode=spatial_padding_mode,
                 )
             elif block_name == "compress_all":
                 output_channel = output_channel // block_params.get("multiplier", 1)
@@ -602,6 +687,7 @@ class Decoder(nn.Module):
                     stride=(2, 2, 2),
                     residual=block_params.get("residual", False),
                     out_channels_reduction_factor=block_params.get("multiplier", 1),
+                    spatial_padding_mode=spatial_padding_mode,
                 )
             else:
                 raise ValueError(f"unknown layer: {block_name}")
@@ -619,7 +705,13 @@ class Decoder(nn.Module):
 
         self.conv_act = nn.SiLU()
         self.conv_out = make_conv_nd(
-            dims, output_channel, out_channels, 3, padding=1, causal=True
+            dims,
+            output_channel,
+            out_channels,
+            3,
+            padding=1,
+            causal=True,
+            spatial_padding_mode=spatial_padding_mode,
         )
 
         self.gradient_checkpointing = False
@@ -745,6 +837,7 @@ class UNetMidBlock3D(nn.Module):
         inject_noise: bool = False,
         timestep_conditioning: bool = False,
         attention_head_dim: int = -1,
+        spatial_padding_mode: str = "zeros",
     ):
         super().__init__()
         resnet_groups = (
@@ -769,6 +862,7 @@ class UNetMidBlock3D(nn.Module):
                     norm_layer=norm_layer,
                     inject_noise=inject_noise,
                     timestep_conditioning=timestep_conditioning,
+                    spatial_padding_mode=spatial_padding_mode,
                 )
                 for _ in range(num_layers)
             ]
@@ -876,9 +970,62 @@ class UNetMidBlock3D(nn.Module):
         return hidden_states
 
 
+class SpaceToDepthDownsample(nn.Module):
+    def __init__(self, dims, in_channels, out_channels, stride, spatial_padding_mode):
+        super().__init__()
+        self.stride = stride
+        self.group_size = in_channels * np.prod(stride) // out_channels
+        self.conv = make_conv_nd(
+            dims=dims,
+            in_channels=in_channels,
+            out_channels=out_channels // np.prod(stride),
+            kernel_size=3,
+            stride=1,
+            causal=True,
+            spatial_padding_mode=spatial_padding_mode,
+        )
+
+    def forward(self, x, causal: bool = True):
+        if self.stride[0] == 2:
+            x = torch.cat(
+                [x[:, :, :1, :, :], x], dim=2
+            )  # duplicate first frames for padding
+
+        # skip connection
+        x_in = rearrange(
+            x,
+            "b c (d p1) (h p2) (w p3) -> b (c p1 p2 p3) d h w",
+            p1=self.stride[0],
+            p2=self.stride[1],
+            p3=self.stride[2],
+        )
+        x_in = rearrange(x_in, "b (c g) d h w -> b c g d h w", g=self.group_size)
+        x_in = x_in.mean(dim=2)
+
+        # conv
+        x = self.conv(x, causal=causal)
+        x = rearrange(
+            x,
+            "b c (d p1) (h p2) (w p3) -> b (c p1 p2 p3) d h w",
+            p1=self.stride[0],
+            p2=self.stride[1],
+            p3=self.stride[2],
+        )
+
+        x = x + x_in
+
+        return x
+
+
 class DepthToSpaceUpsample(nn.Module):
     def __init__(
-        self, dims, in_channels, stride, residual=False, out_channels_reduction_factor=1
+        self,
+        dims,
+        in_channels,
+        stride,
+        residual=False,
+        out_channels_reduction_factor=1,
+        spatial_padding_mode="zeros",
     ):
         super().__init__()
         self.stride = stride
@@ -892,6 +1039,7 @@ class DepthToSpaceUpsample(nn.Module):
             kernel_size=3,
             stride=1,
             causal=True,
+            spatial_padding_mode=spatial_padding_mode,
         )
         self.residual = residual
         self.out_channels_reduction_factor = out_channels_reduction_factor
@@ -961,6 +1109,7 @@ class ResnetBlock3D(nn.Module):
         norm_layer: str = "group_norm",
         inject_noise: bool = False,
         timestep_conditioning: bool = False,
+        spatial_padding_mode: str = "zeros",
     ):
         super().__init__()
         self.in_channels = in_channels
@@ -987,6 +1136,7 @@ class ResnetBlock3D(nn.Module):
             stride=1,
             padding=1,
             causal=True,
+            spatial_padding_mode=spatial_padding_mode,
         )
 
         if inject_noise:
@@ -1011,6 +1161,7 @@ class ResnetBlock3D(nn.Module):
             stride=1,
             padding=1,
             causal=True,
+            spatial_padding_mode=spatial_padding_mode,
         )
 
         if inject_noise:
@@ -1156,30 +1307,28 @@ def unpatchify(x, patch_size_hw, patch_size_t=1):
     return x
 
 
-def create_video_autoencoder_config(
+def create_video_autoencoder_demo_config(
     latent_channels: int = 64,
 ):
     encoder_blocks = [
-        ("res_x", {"num_layers": 4}),
-        ("compress_all_x_y", {"multiplier": 3}),
-        ("res_x", {"num_layers": 4}),
-        ("compress_all_x_y", {"multiplier": 2}),
-        ("res_x", {"num_layers": 4}),
-        ("compress_all", {}),
-        ("res_x", {"num_layers": 3}),
-        ("res_x", {"num_layers": 4}),
+        ("res_x", {"num_layers": 2}),
+        ("compress_space_res", {"multiplier": 2}),
+        ("res_x", {"num_layers": 2}),
+        ("compress_time_res", {"multiplier": 2}),
+        ("res_x", {"num_layers": 1}),
+        ("compress_all_res", {"multiplier": 2}),
+        ("res_x", {"num_layers": 1}),
+        ("compress_all_res", {"multiplier": 2}),
+        ("res_x", {"num_layers": 1}),
     ]
     decoder_blocks = [
-        ("res_x", {"num_layers": 4}),
-        ("compress_all", {"residual": True}),
-        ("res_x_y", {"multiplier": 3}),
-        ("res_x", {"num_layers": 3}),
-        ("compress_all", {"residual": True}),
-        ("res_x_y", {"multiplier": 2}),
-        ("res_x", {"num_layers": 3}),
-        ("compress_all", {"residual": True}),
-        ("res_x", {"num_layers": 3}),
-        ("res_x", {"num_layers": 4}),
+        ("res_x", {"num_layers": 2, "inject_noise": False}),
+        ("compress_all", {"residual": True, "multiplier": 2}),
+        ("res_x", {"num_layers": 2, "inject_noise": False}),
+        ("compress_all", {"residual": True, "multiplier": 2}),
+        ("res_x", {"num_layers": 2, "inject_noise": False}),
+        ("compress_all", {"residual": True, "multiplier": 2}),
+        ("res_x", {"num_layers": 2, "inject_noise": False}),
     ]
     return {
         "_class_name": "CausalVideoAutoencoder",
@@ -1193,6 +1342,7 @@ def create_video_autoencoder_config(
         "use_quant_conv": False,
         "causal_decoder": False,
         "timestep_conditioning": True,
+        "spatial_padding_mode": "replicate",
     }
 
 
@@ -1207,7 +1357,7 @@ def test_vae_patchify_unpatchify():
 
 def demo_video_autoencoder_forward_backward():
     # Configuration for the VideoAutoencoder
-    config = create_video_autoencoder_config()
+    config = create_video_autoencoder_demo_config()
 
     # Instantiate the VideoAutoencoder with the specified configuration
     video_autoencoder = CausalVideoAutoencoder.from_config(config)
@@ -1242,11 +1392,11 @@ def demo_video_autoencoder_forward_backward():
         image_latent, target_shape=image_latent.shape, timestep=timestep
     ).sample
 
-    # first_frame_latent = latent[:, :, :1, :, :]
+    first_frame_latent = latent[:, :, :1, :, :]
 
-    # assert torch.allclose(image_latent, first_frame_latent, atol=1e-6)
+    assert torch.allclose(image_latent, first_frame_latent, atol=1e-6)
     # assert torch.allclose(reconstructed_image, reconstructed_videos[:, :, :1, :, :], atol=1e-6)
-    # assert (image_latent == first_frame_latent).all()
+    # assert torch.allclose(image_latent, first_frame_latent, atol=1e-6)
     # assert (reconstructed_image == reconstructed_videos[:, :, :1, :, :]).all()
 
     # Calculate the loss (e.g., mean squared error)
