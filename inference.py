@@ -3,14 +3,20 @@ import os
 import random
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Union
+from diffusers.utils import logging
+from typing import Optional, List, Union
 
 import imageio
 import numpy as np
 import torch
-from diffusers.utils import logging
 from PIL import Image
-from transformers import T5EncoderModel, T5Tokenizer
+from transformers import (
+    T5EncoderModel,
+    T5Tokenizer,
+    AutoModelForCausalLM,
+    AutoProcessor,
+    AutoTokenizer,
+)
 
 from ltx_video.models.autoencoders.causal_video_autoencoder import (
     CausalVideoAutoencoder,
@@ -265,13 +271,13 @@ def main():
     parser.add_argument(
         "--decode_timestep",
         type=float,
-        default=0.05,
+        default=0.025,
         help="Timestep for decoding noise",
     )
     parser.add_argument(
         "--decode_noise_scale",
         type=float,
-        default=0.025,
+        default=0.0125,
         help="Noise level for decoding noise",
     )
 
@@ -328,6 +334,26 @@ def main():
         help="Sampler to use for noise scheduling. Can be either 'uniform' or 'linear-quadratic'. If not specified, uses the sampler from the checkpoint.",
     )
 
+    # Prompt enhancement
+    parser.add_argument(
+        "--prompt_enhancement_words_threshold",
+        type=int,
+        default=50,
+        help="Enable prompt enhancement only if input prompt has fewer words than this threshold. Set to 0 to disable enhancement completely.",
+    )
+    parser.add_argument(
+        "--prompt_enhancer_image_caption_model_name_or_path",
+        type=str,
+        default="MiaoshouAI/Florence-2-large-PromptGen-v2.0",
+        help="Path to the image caption model",
+    )
+    parser.add_argument(
+        "--prompt_enhancer_llm_model_name_or_path",
+        type=str,
+        default="unsloth/Llama-3.2-3B-Instruct",
+        help="Path to the LLM model, default is Llama-3.2-3B-Instruct, but you can use other models like Llama-3.1-8B-Instruct, or other models supported by Hugging Face",
+    )
+
     args = parser.parse_args()
     logger.warning(f"Running generation with arguments: {args}")
     infer(**vars(args))
@@ -339,6 +365,9 @@ def create_ltx_video_pipeline(
     text_encoder_model_name_or_path: str,
     sampler: Optional[str] = None,
     device: Optional[str] = None,
+    enhance_prompt: bool = False,
+    prompt_enhancer_image_caption_model_name_or_path: Optional[str] = None,
+    prompt_enhancer_llm_model_name_or_path: Optional[str] = None,
 ) -> LTXVideoPipeline:
     ckpt_path = Path(ckpt_path)
     assert os.path.exists(
@@ -367,6 +396,26 @@ def create_ltx_video_pipeline(
     vae = vae.to(device)
     text_encoder = text_encoder.to(device)
 
+    if enhance_prompt:
+        prompt_enhancer_image_caption_model = AutoModelForCausalLM.from_pretrained(
+            prompt_enhancer_image_caption_model_name_or_path, trust_remote_code=True
+        )
+        prompt_enhancer_image_caption_processor = AutoProcessor.from_pretrained(
+            prompt_enhancer_image_caption_model_name_or_path, trust_remote_code=True
+        )
+        prompt_enhancer_llm_model = AutoModelForCausalLM.from_pretrained(
+            prompt_enhancer_llm_model_name_or_path,
+            torch_dtype="bfloat16",
+        )
+        prompt_enhancer_llm_tokenizer = AutoTokenizer.from_pretrained(
+            prompt_enhancer_llm_model_name_or_path,
+        )
+    else:
+        prompt_enhancer_image_caption_model = None
+        prompt_enhancer_image_caption_processor = None
+        prompt_enhancer_llm_model = None
+        prompt_enhancer_llm_tokenizer = None
+
     vae = vae.to(torch.bfloat16)
     if precision == "bfloat16" and transformer.dtype != torch.bfloat16:
         transformer = transformer.to(torch.bfloat16)
@@ -380,6 +429,10 @@ def create_ltx_video_pipeline(
         "tokenizer": tokenizer,
         "scheduler": scheduler,
         "vae": vae,
+        "prompt_enhancer_image_caption_model": prompt_enhancer_image_caption_model,
+        "prompt_enhancer_image_caption_processor": prompt_enhancer_image_caption_processor,
+        "prompt_enhancer_llm_model": prompt_enhancer_llm_model,
+        "prompt_enhancer_llm_tokenizer": prompt_enhancer_llm_tokenizer,
     }
 
     pipeline = LTXVideoPipeline(**submodel_dict)
@@ -415,6 +468,9 @@ def infer(
     conditioning_start_frames: Optional[List[int]] = None,
     sampler: Optional[str] = None,
     device: Optional[str] = None,
+    prompt_enhancement_words_threshold: int = 50,
+    prompt_enhancer_image_caption_model_name_or_path: str = "MiaoshouAI/Florence-2-large-PromptGen-v2.0",
+    prompt_enhancer_llm_model_name_or_path: str = "unsloth/Llama-3.2-3B-Instruct",
     **kwargs,
 ):
     if kwargs.get("input_image_path", None):
@@ -476,12 +532,26 @@ def infer(
         f"Padded dimensions: {height_padded}x{width_padded}x{num_frames_padded}"
     )
 
+    prompt_word_count = len(prompt.split())
+    enhance_prompt = (
+        prompt_enhancement_words_threshold > 0
+        and prompt_word_count < prompt_enhancement_words_threshold
+    )
+
+    if prompt_enhancement_words_threshold > 0 and not enhance_prompt:
+        logger.info(
+            f"Prompt has {prompt_word_count} words, which exceeds the threshold of {prompt_enhancement_words_threshold}. Prompt enhancement disabled."
+        )
+
     pipeline = create_ltx_video_pipeline(
         ckpt_path=ckpt_path,
         precision=precision,
         text_encoder_model_name_or_path=text_encoder_model_name_or_path,
         sampler=sampler,
         device=kwargs.get("device", get_device()),
+        enhance_prompt=enhance_prompt,
+        prompt_enhancer_image_caption_model_name_or_path=prompt_enhancer_image_caption_model_name_or_path,
+        prompt_enhancer_llm_model_name_or_path=prompt_enhancer_llm_model_name_or_path,
     )
 
     conditioning_items = (
@@ -549,6 +619,7 @@ def infer(
         mixed_precision=(precision == "mixed_precision"),
         offload_to_cpu=offload_to_cpu,
         device=device,
+        enhance_prompt=enhance_prompt,
     ).images
 
     # Crop the padded images to the desired resolution and number of frames

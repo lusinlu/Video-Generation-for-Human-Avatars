@@ -15,7 +15,13 @@ from diffusers.schedulers import DPMSolverMultistepScheduler
 from diffusers.utils import deprecate, logging
 from diffusers.utils.torch_utils import randn_tensor
 from einops import rearrange
-from transformers import T5EncoderModel, T5Tokenizer
+from transformers import (
+    T5EncoderModel,
+    T5Tokenizer,
+    AutoModelForCausalLM,
+    AutoProcessor,
+    AutoTokenizer,
+)
 
 from ltx_video.models.autoencoders.causal_video_autoencoder import (
     CausalVideoAutoencoder,
@@ -30,6 +36,7 @@ from ltx_video.models.transformers.symmetric_patchifier import Patchifier
 from ltx_video.models.transformers.transformer3d import Transformer3DModel
 from ltx_video.schedulers.rf import TimestepShifter
 from ltx_video.utils.skip_layer_strategy import SkipLayerStrategy
+from ltx_video.utils.prompt_enhance_utils import generate_cinematic_prompt
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -208,8 +215,15 @@ class LTXVideoPipeline(DiffusionPipeline):
         + r"]{1,}"
     )  # noqa
 
-    _optional_components = ["tokenizer", "text_encoder"]
-    model_cpu_offload_seq = "text_encoder->transformer->vae"
+    _optional_components = [
+        "tokenizer",
+        "text_encoder",
+        "prompt_enhancer_image_caption_model",
+        "prompt_enhancer_image_caption_processor",
+        "prompt_enhancer_llm_model",
+        "prompt_enhancer_llm_tokenizer",
+    ]
+    model_cpu_offload_seq = "prompt_enhancer_image_caption_model->prompt_enhancer_llm_model->text_encoder->transformer->vae"
 
     def __init__(
         self,
@@ -219,6 +233,10 @@ class LTXVideoPipeline(DiffusionPipeline):
         transformer: Transformer3DModel,
         scheduler: DPMSolverMultistepScheduler,
         patchifier: Patchifier,
+        prompt_enhancer_image_caption_model: AutoModelForCausalLM,
+        prompt_enhancer_image_caption_processor: AutoProcessor,
+        prompt_enhancer_llm_model: AutoModelForCausalLM,
+        prompt_enhancer_llm_tokenizer: AutoTokenizer,
     ):
         super().__init__()
 
@@ -229,6 +247,10 @@ class LTXVideoPipeline(DiffusionPipeline):
             transformer=transformer,
             scheduler=scheduler,
             patchifier=patchifier,
+            prompt_enhancer_image_caption_model=prompt_enhancer_image_caption_model,
+            prompt_enhancer_image_caption_processor=prompt_enhancer_image_caption_processor,
+            prompt_enhancer_llm_model=prompt_enhancer_llm_model,
+            prompt_enhancer_llm_tokenizer=prompt_enhancer_llm_tokenizer,
         )
 
         self.video_scale_factor, self.vae_scale_factor, _ = get_vae_size_scale_factor(
@@ -256,6 +278,7 @@ class LTXVideoPipeline(DiffusionPipeline):
         negative_prompt_embeds: Optional[torch.FloatTensor] = None,
         prompt_attention_mask: Optional[torch.FloatTensor] = None,
         negative_prompt_attention_mask: Optional[torch.FloatTensor] = None,
+        text_encoder_max_tokens: int = 256,
         **kwargs,
     ):
         r"""
@@ -296,8 +319,9 @@ class LTXVideoPipeline(DiffusionPipeline):
             batch_size = prompt_embeds.shape[0]
 
         # See Section 3.1. of the paper.
-        # FIXME: to be configured in config not hardecoded. Fix in separate PR with rest of config
-        max_length = 256  # TPU supports only lengths multiple of 128
+        max_length = (
+            text_encoder_max_tokens  # TPU supports only lengths multiple of 128
+        )
         if prompt_embeds is None:
             assert (
                 self.text_encoder is not None
@@ -446,6 +470,7 @@ class LTXVideoPipeline(DiffusionPipeline):
         negative_prompt_embeds=None,
         prompt_attention_mask=None,
         negative_prompt_attention_mask=None,
+        enhance_prompt=False,
     ):
         if height % 8 != 0 or width % 8 != 0:
             raise ValueError(
@@ -506,6 +531,20 @@ class LTXVideoPipeline(DiffusionPipeline):
                     f" got: `prompt_attention_mask` {prompt_attention_mask.shape} != `negative_prompt_attention_mask`"
                     f" {negative_prompt_attention_mask.shape}."
                 )
+
+        if enhance_prompt:
+            assert (
+                self.prompt_enhancer_image_caption_model is not None
+            ), "Image caption model must be initialized if enhance_prompt is True"
+            assert (
+                self.prompt_enhancer_image_caption_processor is not None
+            ), "Image caption processor must be initialized if enhance_prompt is True"
+            assert (
+                self.prompt_enhancer_llm_model is not None
+            ), "Text prompt enhancer model must be initialized if enhance_prompt is True"
+            assert (
+                self.prompt_enhancer_llm_tokenizer is not None
+            ), "Text prompt enhancer tokenizer must be initialized if enhance_prompt is True"
 
     def _text_preprocessing(self, text):
         if not isinstance(text, (tuple, list)):
@@ -642,6 +681,8 @@ class LTXVideoPipeline(DiffusionPipeline):
         decode_noise_scale: Optional[List[float]] = None,
         mixed_precision: bool = False,
         offload_to_cpu: bool = False,
+        enhance_prompt: bool = False,
+        text_encoder_max_tokens: int = 256,
         **kwargs,
     ) -> Union[ImagePipelineOutput, Tuple]:
         """
@@ -706,6 +747,10 @@ class LTXVideoPipeline(DiffusionPipeline):
                 If set to `True`, the requested height and width are first mapped to the closest resolutions using
                 `ASPECT_RATIO_1024_BIN`. After the produced latents are decoded into images, they are resized back to
                 the requested resolution. Useful for generating non-square images.
+            enhance_prompt (`bool`, *optional*, defaults to `False`):
+                If set to `True`, the prompt is enhanced using a LLM model.
+            text_encoder_max_tokens (`int`, *optional*, defaults to `256`):
+                The maximum number of tokens to use for the text encoder.
 
         Examples:
 
@@ -765,6 +810,24 @@ class LTXVideoPipeline(DiffusionPipeline):
                 batch_size, num_conds, 2, skip_block_list
             )
 
+        if enhance_prompt:
+            self.prompt_enhancer_image_caption_model = (
+                self.prompt_enhancer_image_caption_model.to(self._execution_device)
+            )
+            self.prompt_enhancer_llm_model = self.prompt_enhancer_llm_model.to(
+                self._execution_device
+            )
+
+            prompt = generate_cinematic_prompt(
+                self.prompt_enhancer_image_caption_model,
+                self.prompt_enhancer_image_caption_processor,
+                self.prompt_enhancer_llm_model,
+                self.prompt_enhancer_llm_tokenizer,
+                prompt,
+                conditioning_items,
+                max_new_tokens=text_encoder_max_tokens,
+            )
+
         # 3. Encode input prompt
         if self.text_encoder is not None:
             self.text_encoder = self.text_encoder.to(self._execution_device)
@@ -784,6 +847,7 @@ class LTXVideoPipeline(DiffusionPipeline):
             negative_prompt_embeds=negative_prompt_embeds,
             prompt_attention_mask=prompt_attention_mask,
             negative_prompt_attention_mask=negative_prompt_attention_mask,
+            text_encoder_max_tokens=text_encoder_max_tokens,
         )
 
         if offload_to_cpu and self.text_encoder is not None:
