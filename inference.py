@@ -7,8 +7,10 @@ from diffusers.utils import logging
 from typing import Optional, List, Union
 
 import imageio
+import json
 import numpy as np
 import torch
+from safetensors import safe_open
 from PIL import Image
 from transformers import (
     T5EncoderModel,
@@ -237,13 +239,13 @@ def main():
     parser.add_argument(
         "--height",
         type=int,
-        default=480,
+        default=704,
         help="Height of the output video frames. Optional if an input image provided.",
     )
     parser.add_argument(
         "--width",
         type=int,
-        default=704,
+        default=1216,
         help="Width of the output video frames. If None will infer from input image.",
     )
     parser.add_argument(
@@ -253,7 +255,7 @@ def main():
         help="Number of frames to generate in the output video",
     )
     parser.add_argument(
-        "--frame_rate", type=int, default=25, help="Frame rate for the output video"
+        "--frame_rate", type=int, default=30, help="Frame rate for the output video"
     )
     parser.add_argument(
         "--device",
@@ -271,13 +273,13 @@ def main():
     parser.add_argument(
         "--decode_timestep",
         type=float,
-        default=0.025,
+        default=0.05,
         help="Timestep for decoding noise",
     )
     parser.add_argument(
         "--decode_noise_scale",
         type=float,
-        default=0.0125,
+        default=0.025,
         help="Noise level for decoding noise",
     )
 
@@ -353,6 +355,11 @@ def main():
         default="unsloth/Llama-3.2-3B-Instruct",
         help="Path to the LLM model, default is Llama-3.2-3B-Instruct, but you can use other models like Llama-3.1-8B-Instruct, or other models supported by Hugging Face",
     )
+    parser.add_argument(
+        "--stochastic_sampling",
+        action="store_true",
+        help="Runs inference with stochastic sampling.",
+    )
 
     args = parser.parse_args()
     logger.warning(f"Running generation with arguments: {args}")
@@ -373,6 +380,13 @@ def create_ltx_video_pipeline(
     assert os.path.exists(
         ckpt_path
     ), f"Ckpt path provided (--ckpt_path) {ckpt_path} does not exist"
+
+    with safe_open(ckpt_path, framework="pt") as f:
+        metadata = f.metadata()
+        config_str = metadata.get("config")
+        configs = json.loads(config_str)
+        allowed_inference_steps = configs.get("allowed_inference_steps", None)
+
     vae = CausalVideoAutoencoder.from_pretrained(ckpt_path)
     transformer = Transformer3DModel.from_pretrained(ckpt_path)
 
@@ -433,6 +447,7 @@ def create_ltx_video_pipeline(
         "prompt_enhancer_image_caption_processor": prompt_enhancer_image_caption_processor,
         "prompt_enhancer_llm_model": prompt_enhancer_llm_model,
         "prompt_enhancer_llm_tokenizer": prompt_enhancer_llm_tokenizer,
+        "allowed_inference_steps": allowed_inference_steps,
     }
 
     pipeline = LTXVideoPipeline(**submodel_dict)
@@ -471,6 +486,7 @@ def infer(
     prompt_enhancement_words_threshold: int = 50,
     prompt_enhancer_image_caption_model_name_or_path: str = "MiaoshouAI/Florence-2-large-PromptGen-v2.0",
     prompt_enhancer_llm_model_name_or_path: str = "unsloth/Llama-3.2-3B-Instruct",
+    stochastic_sampling: bool = False,
     **kwargs,
 ):
     if kwargs.get("input_image_path", None):
@@ -620,6 +636,7 @@ def infer(
         offload_to_cpu=offload_to_cpu,
         device=device,
         enhance_prompt=enhance_prompt,
+        stochastic_sampling=stochastic_sampling,
     ).images
 
     # Crop the padded images to the desired resolution and number of frames

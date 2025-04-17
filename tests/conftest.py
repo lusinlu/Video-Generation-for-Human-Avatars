@@ -13,6 +13,15 @@ def test_paths(request, pytestconfig):
         )
         input_image_path = pytestconfig.getoption("input_image_path")
         input_video_path = pytestconfig.getoption("input_video_path")
+        prompt_enhancer_image_caption_model_name_or_path = pytestconfig.getoption(
+            "prompt_enhancer_image_caption_model_name_or_path"
+        )
+        prompt_enhancer_llm_model_name_or_path = pytestconfig.getoption(
+            "prompt_enhancer_llm_model_name_or_path"
+        )
+        prompt_enhancement_words_threshold = pytestconfig.getoption(
+            "prompt_enhancement_words_threshold"
+        )
 
         config = {
             "ckpt_path": ckpt_path,
@@ -20,6 +29,9 @@ def test_paths(request, pytestconfig):
             "input_video_path": input_video_path,
             "output_path": output_path,
             "text_encoder_model_name_or_path": text_encoder_model_name_or_path,
+            "prompt_enhancer_image_caption_model_name_or_path": prompt_enhancer_image_caption_model_name_or_path,
+            "prompt_enhancer_llm_model_name_or_path": prompt_enhancer_llm_model_name_or_path,
+            "prompt_enhancement_words_threshold": prompt_enhancement_words_threshold,
         }
 
         yield config
@@ -59,4 +71,22 @@ def pytest_addoption(parser):
         action="store",
         default="tests/utils/woman.mp4",
         help="Path to input video file.",
+    )
+    parser.addoption(
+        "--prompt_enhancer_image_caption_model_name_or_path",
+        action="store",
+        default="MiaoshouAI/Florence-2-large-PromptGen-v2.0",
+        help="Path to prompt_enhancer_image_caption_model.",
+    )
+    parser.addoption(
+        "--prompt_enhancer_llm_model_name_or_path",
+        action="store",
+        default="unsloth/Llama-3.2-3B-Instruct",
+        help="Path to LLM model for prompt enhancement.",
+    )
+    parser.addoption(
+        "--prompt_enhancement_words_threshold",
+        type=int,
+        default=50,
+        help="Enable prompt enhancement only if input prompt has fewer words than this threshold. Set to 0 to disable enhancement completely.",
     )

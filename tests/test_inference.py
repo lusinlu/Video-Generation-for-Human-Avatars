@@ -64,8 +64,6 @@ def test_infer_runs_on_real_path(test_paths, conditioning_test_mode):
         "negative_prompt": "worst quality, inconsistent motion, blurry, jittery, distorted",
         "offload_to_cpu": False,
         "prompt_enhancement_max_words": 1000,
-        "prompt_enhancer_image_caption_model_name_or_path": "MiaoshouAI/Florence-2-large-PromptGen-v2.0",
-        "prompt_enhancer_llm_model_name_or_path": "unsloth/Llama-3.2-3B-Instruct",
     }
 
     infer(**{**conditioning_params, **test_paths, **params})
@@ -99,9 +97,13 @@ def test_pipeline_on_batch(test_paths):
         device=device,
         precision="bfloat16",
         text_encoder_model_name_or_path=test_paths["text_encoder_model_name_or_path"],
-        enhance_prompt=True,
-        prompt_enhancer_image_caption_model_name_or_path="MiaoshouAI/Florence-2-large-PromptGen-v2.0",
-        prompt_enhancer_llm_model_name_or_path="unsloth/Llama-3.2-3B-Instruct",
+        enhance_prompt=False,
+        prompt_enhancer_image_caption_model_name_or_path=test_paths[
+            "prompt_enhancer_image_caption_model_name_or_path"
+        ],
+        prompt_enhancer_llm_model_name_or_path=test_paths[
+            "prompt_enhancer_llm_model_name_or_path"
+        ],
     )
 
     params = {
@@ -175,8 +177,12 @@ def test_prompt_enhancement(test_paths, monkeypatch):
         precision="bfloat16",
         text_encoder_model_name_or_path=test_paths["text_encoder_model_name_or_path"],
         enhance_prompt=True,
-        prompt_enhancer_image_caption_model_name_or_path="MiaoshouAI/Florence-2-large-PromptGen-v2.0",
-        prompt_enhancer_llm_model_name_or_path="unsloth/Llama-3.2-3B-Instruct",
+        prompt_enhancer_image_caption_model_name_or_path=test_paths[
+            "prompt_enhancer_image_caption_model_name_or_path"
+        ],
+        prompt_enhancer_llm_model_name_or_path=test_paths[
+            "prompt_enhancer_llm_model_name_or_path"
+        ],
     )
 
     original_prompt = "A cat sitting on a windowsill"
