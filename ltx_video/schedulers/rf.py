@@ -182,6 +182,7 @@ class RectifiedFlowScheduler(SchedulerMixin, ConfigMixin, TimestepShifter):
         base_resolution: int = 32**2,
         target_shift_terminal: Optional[float] = None,
         sampler: Optional[str] = "Uniform",
+        shift: Optional[float] = None,
     ):
         super().__init__()
         self.init_noise_sigma = 1.0
@@ -190,13 +191,25 @@ class RectifiedFlowScheduler(SchedulerMixin, ConfigMixin, TimestepShifter):
         self.shifting = shifting
         self.base_resolution = base_resolution
         self.target_shift_terminal = target_shift_terminal
-        self.timesteps = self.sigmas = self.get_initial_timesteps(num_train_timesteps)
+        self.timesteps = self.sigmas = self.get_initial_timesteps(
+            num_train_timesteps, shift=shift
+        )
+        self.shift = shift
 
-    def get_initial_timesteps(self, num_timesteps: int) -> Tensor:
+    def get_initial_timesteps(
+        self, num_timesteps: int, shift: Optional[float] = None
+    ) -> Tensor:
         if self.sampler == "Uniform":
             return torch.linspace(1, 1 / num_timesteps, num_timesteps)
         elif self.sampler == "LinearQuadratic":
             return linear_quadratic_schedule(num_timesteps)
+        elif self.sampler == "Constant":
+            assert (
+                shift is not None
+            ), "Shift must be provided for constant time shift sampler."
+            return time_shift(
+                shift, 1, torch.linspace(1, 1 / num_timesteps, num_timesteps)
+            )
 
     def shift_timesteps(self, samples: Tensor, timesteps: Tensor) -> Tensor:
         if self.shifting == "SD3":
@@ -224,7 +237,9 @@ class RectifiedFlowScheduler(SchedulerMixin, ConfigMixin, TimestepShifter):
             device (`Union[str, torch.device]`, *optional*): The device to which the timesteps tensor will be moved.
         """
         num_inference_steps = min(self.config.num_train_timesteps, num_inference_steps)
-        self.timesteps = self.get_initial_timesteps(num_inference_steps).to(device)
+        self.timesteps = self.get_initial_timesteps(
+            num_inference_steps, shift=self.shift
+        ).to(device)
         self.timesteps = self.shift_timesteps(samples, self.timesteps)
         self.num_inference_steps = num_inference_steps
         self.sigmas = self.timesteps
@@ -277,6 +292,7 @@ class RectifiedFlowScheduler(SchedulerMixin, ConfigMixin, TimestepShifter):
         timestep: torch.FloatTensor,
         sample: torch.FloatTensor,
         return_dict: bool = True,
+        stochastic_sampling: Optional[bool] = False,
         **kwargs,
     ) -> Union[RectifiedFlowSchedulerOutput, Tuple]:
         """
@@ -295,6 +311,8 @@ class RectifiedFlowScheduler(SchedulerMixin, ConfigMixin, TimestepShifter):
                 A current latent tokens to be de-noised.
             return_dict (`bool`, *optional*, defaults to `True`):
                 Whether or not to return a [`~schedulers.scheduling_ddim.DDIMSchedulerOutput`] or `tuple`.
+            stochastic_sampling (`bool`, *optional*, defaults to `False`):
+                Whether to use stochastic sampling for the sampling process.
 
         Returns:
             [`~schedulers.scheduling_utils.RectifiedFlowSchedulerOutput`] or `tuple`:
@@ -327,7 +345,12 @@ class RectifiedFlowScheduler(SchedulerMixin, ConfigMixin, TimestepShifter):
             dt = (timestep - lower_timestep)[..., None]
 
         # Compute previous sample
-        prev_sample = sample - dt * model_output
+        if stochastic_sampling:
+            x0 = sample - timestep[..., None] * model_output
+            next_timestep = timestep[..., None] - dt
+            prev_sample = self.add_noise(x0, torch.randn_like(sample), next_timestep)
+        else:
+            prev_sample = sample - dt * model_output
 
         if not return_dict:
             return (prev_sample,)

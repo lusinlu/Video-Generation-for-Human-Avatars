@@ -31,7 +31,7 @@ This is the official repository for LTX-Video.
 # Introduction
 
 LTX-Video is the first DiT-based video generation model that can generate high-quality videos in *real-time*.
-It can generate 24 FPS videos at 768x512 resolution, faster than it takes to watch them.
+It can generate 30 FPS videos at 1216×704 resolution, faster than it takes to watch them.
 The model is trained on a large-scale dataset of diverse videos and can generate high-resolution videos
 with realistic and diverse content.
 
@@ -45,6 +45,18 @@ The model supports text-to-image, image-to-video, keyframe-based animation, vide
 | ![example13](./docs/_static/ltx-video_example_00013.gif)<br><details style="max-width: 300px; margin: auto;"><summary>The camera pans across a cityscape of tall buildings...</summary>The camera pans across a cityscape of tall buildings with a circular building in the center. The camera moves from left to right, showing the tops of the buildings and the circular building in the center. The buildings are various shades of gray and white, and the circular building has a green roof. The camera angle is high, looking down at the city. The lighting is bright, with the sun shining from the upper left, casting shadows from the buildings. The scene is computer-generated imagery.</details> | ![example14](./docs/_static/ltx-video_example_00014.gif)<br><details style="max-width: 300px; margin: auto;"><summary>A man walks towards a window, looks out, and then turns around...</summary>A man walks towards a window, looks out, and then turns around. He has short, dark hair, dark skin, and is wearing a brown coat over a red and gray scarf. He walks from left to right towards a window, his gaze fixed on something outside. The camera follows him from behind at a medium distance. The room is brightly lit, with white walls and a large window covered by a white curtain. As he approaches the window, he turns his head slightly to the left, then back to the right. He then turns his entire body to the right, facing the window. The camera remains stationary as he stands in front of the window. The scene is captured in real-life footage.</details> | ![example15](./docs/_static/ltx-video_example_00015.gif)<br><details style="max-width: 300px; margin: auto;"><summary>Two police officers in dark blue uniforms and matching hats...</summary>Two police officers in dark blue uniforms and matching hats enter a dimly lit room through a doorway on the left side of the frame. The first officer, with short brown hair and a mustache, steps inside first, followed by his partner, who has a shaved head and a goatee. Both officers have serious expressions and maintain a steady pace as they move deeper into the room. The camera remains stationary, capturing them from a slightly low angle as they enter. The room has exposed brick walls and a corrugated metal ceiling, with a barred window visible in the background. The lighting is low-key, casting shadows on the officers' faces and emphasizing the grim atmosphere. The scene appears to be from a film or television show.</details> | ![example16](./docs/_static/ltx-video_example_00016.gif)<br><details style="max-width: 300px; margin: auto;"><summary>A woman with short brown hair, wearing a maroon sleeveless top...</summary>A woman with short brown hair, wearing a maroon sleeveless top and a silver necklace, walks through a room while talking, then a woman with pink hair and a white shirt appears in the doorway and yells. The first woman walks from left to right, her expression serious; she has light skin and her eyebrows are slightly furrowed. The second woman stands in the doorway, her mouth open in a yell; she has light skin and her eyes are wide. The room is dimly lit, with a bookshelf visible in the background. The camera follows the first woman as she walks, then cuts to a close-up of the second woman's face. The scene is captured in real-life footage.</details> |
 
 # News
+
+## April, 15th, 2025: New checkpoints v0.9.6:
+- Release a new checkpoint [ltxv-2b-0.9.6-dev-04-25](https://huggingface.co/Lightricks/LTX-Video/blob/main/ltxv-2b-0.9.6-dev-04-25.safetensors) with improved quality
+- Release a new distilled model [ltxv-2b-0.9.6-distilled-04-25](https://huggingface.co/Lightricks/LTX-Video/blob/main/ltxv-2b-0.9.6-distilled-04-25.safetensors)
+    * 15x faster inference than non-distilled model.
+    * Does not require classifier-free guidance and spatio-temporal guidance.
+    * Supports sampling with 8 (recommended), 4, 2 or 1 diffusion steps.
+- Improved prompt adherence, motion quality and fine details.
+- New default resolution and FPS: 1216 × 704 pixels at 30 FPS
+    * Still real time on H100 with the distilled model.
+    * Other resolutions and FPS are still supported.
+- Support stochastic inference (can improve visual quality when using the distilled model)
 
 ## March, 5th, 2025: New checkpoint v0.9.5
 - New license for commercial use ([OpenRail-M](https://huggingface.co/Lightricks/LTX-Video/ltx-video-2b-v0.9.5.license.txt))
@@ -111,7 +123,12 @@ Then, download the model from [Hugging Face](https://huggingface.co/Lightricks/L
 from huggingface_hub import hf_hub_download
 
 model_dir = 'MODEL_DIR'   # The local directory to save downloaded checkpoint
-hf_hub_download(repo_id="Lightricks/LTX-Video", filename="ltx-video-2b-v0.9.5.safetensors", local_dir=model_dir, local_dir_use_symlinks=False, repo_type='model')
+
+# Distilled model:
+hf_hub_download(repo_id="Lightricks/LTX-Video", filename="ltxv-2b-0.9.6-distilled-04-25.safetensors", local_dir=model_dir, local_dir_use_symlinks=False, repo_type='model')
+
+# Full model:
+hf_hub_download(repo_id="Lightricks/LTX-Video", filename="ltxv-2b-0.9.6-dev-04-25.safetensors", local_dir=model_dir, local_dir_use_symlinks=False, repo_type='model')
 ```
 
 ### Inference
