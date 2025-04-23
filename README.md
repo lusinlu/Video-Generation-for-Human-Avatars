@@ -52,6 +52,7 @@ The model supports text-to-image, image-to-video, keyframe-based animation, vide
     * 15x faster inference than non-distilled model.
     * Does not require classifier-free guidance and spatio-temporal guidance.
     * Supports sampling with 8 (recommended), 4, 2 or 1 diffusion steps.
+    * New license for commercial use ([Open Weights](https://huggingface.co/Lightricks/LTX-Video/blob/main/ltxv-2b-0.9.6-dev-04-25.license.txt))
 - Improved prompt adherence, motion quality and fine details.
 - New default resolution and FPS: 1216 × 704 pixels at 30 FPS
     * Still real time on H100 with the distilled model.
@@ -59,7 +60,7 @@ The model supports text-to-image, image-to-video, keyframe-based animation, vide
 - Support stochastic inference (can improve visual quality when using the distilled model)
 
 ## March, 5th, 2025: New checkpoint v0.9.5
-- New license for commercial use ([OpenRail-M](https://huggingface.co/Lightricks/LTX-Video/ltx-video-2b-v0.9.5.license.txt))
+- New license for commercial use ([OpenRail-M](https://huggingface.co/Lightricks/LTX-Video/blob/main/ltx-video-2b-v0.9.5.license.txt))
 - Release a new checkpoint v0.9.5 with improved quality
 - Support keyframes and video extension
 - Support higher resolutions
