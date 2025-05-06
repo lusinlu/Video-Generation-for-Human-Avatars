@@ -10,7 +10,7 @@ def init_latents_and_scheduler(sampler):
         sampler=("Uniform" if sampler.lower() == "uniform" else "LinearQuadratic")
     )
     latents = torch.randn(size=(batch_size, n_tokens, n_channels))
-    scheduler.set_timesteps(num_inference_steps=num_steps, samples=latents)
+    scheduler.set_timesteps(num_inference_steps=num_steps, samples_shape=latents.shape)
     return scheduler, latents
 
 

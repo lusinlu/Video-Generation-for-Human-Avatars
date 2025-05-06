@@ -23,10 +23,10 @@ from ltx_video.utils.diffusers_config_mapping import (
 
 
 def linear_quadratic_schedule(num_steps, threshold_noise=0.025, linear_steps=None):
+    if num_steps == 1:
+        return torch.tensor([1.0])
     if linear_steps is None:
         linear_steps = num_steps // 2
-    if num_steps < 2:
-        return torch.tensor([1.0])
     linear_sigma_schedule = [
         i * threshold_noise / linear_steps for i in range(linear_steps)
     ]
@@ -47,14 +47,14 @@ def linear_quadratic_schedule(num_steps, threshold_noise=0.025, linear_steps=Non
 
 
 def simple_diffusion_resolution_dependent_timestep_shift(
-    samples: Tensor,
+    samples_shape: torch.Size,
     timesteps: Tensor,
     n: int = 32 * 32,
 ) -> Tensor:
-    if len(samples.shape) == 3:
-        _, m, _ = samples.shape
-    elif len(samples.shape) in [4, 5]:
-        m = math.prod(samples.shape[2:])
+    if len(samples_shape) == 3:
+        _, m, _ = samples_shape
+    elif len(samples_shape) in [4, 5]:
+        m = math.prod(samples_shape[2:])
     else:
         raise ValueError(
             "Samples must have shape (b, t, c), (b, c, h, w) or (b, c, f, h, w)"
@@ -110,7 +110,9 @@ def strech_shifts_to_terminal(shifts: Tensor, terminal=0.1):
 
 
 def sd3_resolution_dependent_timestep_shift(
-    samples: Tensor, timesteps: Tensor, target_shift_terminal: Optional[float] = None
+    samples_shape: torch.Size,
+    timesteps: Tensor,
+    target_shift_terminal: Optional[float] = None,
 ) -> Tensor:
     """
     Shifts the timestep schedule as a function of the generated resolution.
@@ -123,7 +125,7 @@ def sd3_resolution_dependent_timestep_shift(
 
 
     Args:
-        samples (Tensor): A batch of samples with shape (batch_size, channels, height, width) or
+        samples_shape (torch.Size): The samples batch shape (batch_size, channels, height, width) or
             (batch_size, channels, frame, height, width).
         timesteps (Tensor): A batch of timesteps with shape (batch_size,).
         target_shift_terminal (float): The target terminal value for the shifted timesteps.
@@ -131,10 +133,10 @@ def sd3_resolution_dependent_timestep_shift(
     Returns:
         Tensor: The shifted timesteps.
     """
-    if len(samples.shape) == 3:
-        _, m, _ = samples.shape
-    elif len(samples.shape) in [4, 5]:
-        m = math.prod(samples.shape[2:])
+    if len(samples_shape) == 3:
+        _, m, _ = samples_shape
+    elif len(samples_shape) in [4, 5]:
+        m = math.prod(samples_shape[2:])
     else:
         raise ValueError(
             "Samples must have shape (b, t, c), (b, c, h, w) or (b, c, f, h, w)"
@@ -149,7 +151,7 @@ def sd3_resolution_dependent_timestep_shift(
 
 class TimestepShifter(ABC):
     @abstractmethod
-    def shift_timesteps(self, samples: Tensor, timesteps: Tensor) -> Tensor:
+    def shift_timesteps(self, samples_shape: torch.Size, timesteps: Tensor) -> Tensor:
         pass
 
 
@@ -211,36 +213,50 @@ class RectifiedFlowScheduler(SchedulerMixin, ConfigMixin, TimestepShifter):
                 shift, 1, torch.linspace(1, 1 / num_timesteps, num_timesteps)
             )
 
-    def shift_timesteps(self, samples: Tensor, timesteps: Tensor) -> Tensor:
+    def shift_timesteps(self, samples_shape: torch.Size, timesteps: Tensor) -> Tensor:
         if self.shifting == "SD3":
             return sd3_resolution_dependent_timestep_shift(
-                samples, timesteps, self.target_shift_terminal
+                samples_shape, timesteps, self.target_shift_terminal
             )
         elif self.shifting == "SimpleDiffusion":
             return simple_diffusion_resolution_dependent_timestep_shift(
-                samples, timesteps, self.base_resolution
+                samples_shape, timesteps, self.base_resolution
             )
         return timesteps
 
     def set_timesteps(
         self,
-        num_inference_steps: int,
-        samples: Tensor,
+        num_inference_steps: Optional[int] = None,
+        samples_shape: Optional[torch.Size] = None,
+        timesteps: Optional[Tensor] = None,
         device: Union[str, torch.device] = None,
     ):
         """
         Sets the discrete timesteps used for the diffusion chain. Supporting function to be run before inference.
+        If `timesteps` are provided, they will be used instead of the scheduled timesteps.
 
         Args:
-            num_inference_steps (`int`): The number of diffusion steps used when generating samples.
-            samples (`Tensor`): A batch of samples with shape.
+            num_inference_steps (`int` *optional*): The number of diffusion steps used when generating samples.
+            samples_shape (`torch.Size` *optional*): The samples batch shape, used for shifting.
+            timesteps ('torch.Tensor' *optional*): Specific timesteps to use instead of scheduled timesteps.
             device (`Union[str, torch.device]`, *optional*): The device to which the timesteps tensor will be moved.
         """
-        num_inference_steps = min(self.config.num_train_timesteps, num_inference_steps)
-        self.timesteps = self.get_initial_timesteps(
-            num_inference_steps, shift=self.shift
-        ).to(device)
-        self.timesteps = self.shift_timesteps(samples, self.timesteps)
+        if timesteps is not None and num_inference_steps is not None:
+            raise ValueError(
+                "You cannot provide both `timesteps` and `num_inference_steps`."
+            )
+        if timesteps is None:
+            num_inference_steps = min(
+                self.config.num_train_timesteps, num_inference_steps
+            )
+            timesteps = self.get_initial_timesteps(
+                num_inference_steps, shift=self.shift
+            ).to(device)
+            timesteps = self.shift_timesteps(samples_shape, timesteps)
+        else:
+            timesteps = torch.Tensor(timesteps).to(device)
+            num_inference_steps = len(timesteps)
+        self.timesteps = timesteps
         self.num_inference_steps = num_inference_steps
         self.sigmas = self.timesteps
 

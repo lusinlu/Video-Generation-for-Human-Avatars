@@ -17,6 +17,7 @@ from safetensors import safe_open
 
 from ltx_video.models.autoencoders.conv_nd_factory import make_conv_nd, make_linear_nd
 from ltx_video.models.autoencoders.pixel_norm import PixelNorm
+from ltx_video.models.autoencoders.pixel_shuffle import PixelShuffleND
 from ltx_video.models.autoencoders.vae import AutoencoderKLWrapper
 from ltx_video.models.transformers.attention import Attention
 from ltx_video.utils.diffusers_config_mapping import (
@@ -1041,31 +1042,20 @@ class DepthToSpaceUpsample(nn.Module):
             causal=True,
             spatial_padding_mode=spatial_padding_mode,
         )
+        self.pixel_shuffle = PixelShuffleND(dims=dims, upscale_factors=stride)
         self.residual = residual
         self.out_channels_reduction_factor = out_channels_reduction_factor
 
     def forward(self, x, causal: bool = True):
         if self.residual:
             # Reshape and duplicate the input to match the output shape
-            x_in = rearrange(
-                x,
-                "b (c p1 p2 p3) d h w -> b c (d p1) (h p2) (w p3)",
-                p1=self.stride[0],
-                p2=self.stride[1],
-                p3=self.stride[2],
-            )
+            x_in = self.pixel_shuffle(x)
             num_repeat = np.prod(self.stride) // self.out_channels_reduction_factor
             x_in = x_in.repeat(1, num_repeat, 1, 1, 1)
             if self.stride[0] == 2:
                 x_in = x_in[:, :, 1:, :, :]
         x = self.conv(x, causal=causal)
-        x = rearrange(
-            x,
-            "b (c p1 p2 p3) d h w -> b c (d p1) (h p2) (w p3)",
-            p1=self.stride[0],
-            p2=self.stride[1],
-            p3=self.stride[2],
-        )
+        x = self.pixel_shuffle(x)
         if self.stride[0] == 2:
             x = x[:, :, 1:, :, :]
         if self.residual:

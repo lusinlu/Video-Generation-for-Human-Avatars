@@ -7,7 +7,8 @@ This is the official repository for LTX-Video.
 [Website](https://www.lightricks.com/ltxv) |
 [Model](https://huggingface.co/Lightricks/LTX-Video) |
 [Demo](https://app.ltx.studio/ltx-video) |
-[Paper](https://arxiv.org/abs/2501.00103)
+[Paper](https://arxiv.org/abs/2501.00103) |
+[Discord](https://discord.gg/Mn8BRgUKKy)
 
 </div>
 
@@ -46,13 +47,22 @@ The model supports text-to-image, image-to-video, keyframe-based animation, vide
 
 # News
 
+## May, 5th, 2025: New model 13B v0.9.7:
+- Release a new 13B model [ltxv-13b-0.9.7-dev](https://huggingface.co/Lightricks/LTX-Video/blob/main/ltxv-13b-0.9.7-dev.safetensors)
+- Release a new quantized model [ltxv-13b-0.9.7-dev-fp8](https://huggingface.co/Lightricks/LTX-Video/blob/main/ltxv-13b-0.9.7-dev-fp8.safetensors) for faster inference with less VRam (Supported in the [official CompfyUI workflow](https://github.com/Lightricks/ComfyUI-LTXVideo/))
+- Release a new upscalers
+  * [ltxv-temporal-upscaler-0.9.7](https://huggingface.co/Lightricks/LTX-Video/blob/main/ltxv-temporal-upscaler-0.9.7.safetensors)
+  * [ltxv-spatial-upscaler-0.9.7](https://huggingface.co/Lightricks/LTX-Video/blob/main/ltxv-spatial-upscaler-0.9.7.safetensors)
+- Breakthrough prompt adherence and physical understanding.
+- New Pipeline for multi-scale video rendering for fast and high quality results
+
+
 ## April, 15th, 2025: New checkpoints v0.9.6:
 - Release a new checkpoint [ltxv-2b-0.9.6-dev-04-25](https://huggingface.co/Lightricks/LTX-Video/blob/main/ltxv-2b-0.9.6-dev-04-25.safetensors) with improved quality
 - Release a new distilled model [ltxv-2b-0.9.6-distilled-04-25](https://huggingface.co/Lightricks/LTX-Video/blob/main/ltxv-2b-0.9.6-distilled-04-25.safetensors)
     * 15x faster inference than non-distilled model.
     * Does not require classifier-free guidance and spatio-temporal guidance.
     * Supports sampling with 8 (recommended), 4, 2 or 1 diffusion steps.
-    * New license for commercial use ([Open Weights](https://huggingface.co/Lightricks/LTX-Video/blob/main/ltxv-2b-0.9.6-dev-04-25.license.txt))
 - Improved prompt adherence, motion quality and fine details.
 - New default resolution and FPS: 1216 × 704 pixels at 30 FPS
     * Still real time on H100 with the distilled model.
@@ -60,7 +70,7 @@ The model supports text-to-image, image-to-video, keyframe-based animation, vide
 - Support stochastic inference (can improve visual quality when using the distilled model)
 
 ## March, 5th, 2025: New checkpoint v0.9.5
-- New license for commercial use ([OpenRail-M](https://huggingface.co/Lightricks/LTX-Video/blob/main/ltx-video-2b-v0.9.5.license.txt))
+- New license for commercial use ([OpenRail-M](https://huggingface.co/Lightricks/LTX-Video/ltx-video-2b-v0.9.5.license.txt))
 - Release a new checkpoint v0.9.5 with improved quality
 - Support keyframes and video extension
 - Support higher resolutions
@@ -93,6 +103,17 @@ The model supports text-to-image, image-to-video, keyframe-based animation, vide
 - Initial release of LTX-Video
 - Support text-to-video and image-to-video generation
 
+
+# Models
+
+| Model              | Version | Notes                                                                                      | inference.py config                                                                                                                                      | ComfyUI workflow (Recommended) |
+|--------------------|---------|--------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------|------------------|
+| ltxv-13b           | 0.9.7   | Highest quality, requires more VRAM                                                      | [ltxv-13b-0.9.7-dev.yaml](https://github.com/Lightricks/LTX-Video/blob/main/configs/ltxv-13b-0.9.7-dev.yaml)                                             | [ltxv-13b-i2v-base.json](https://github.com/Lightricks/ComfyUI-LTXVideo/example_workflows/ltxv-13b-i2v-base.json)             |
+| ltxv-13b-fp8       | 0.9.7   | Quantized model                                                                            | Coming soon                                                                                                                                              | Coming soon             |
+| ltxv-2b            | 0.9.6   | Good quality, lower VRAM requirement than ltxv-13b                                              | [ltxv-2b-0.9.6-dev.yaml](https://github.com/Lightricks/LTX-Video/blob/main/configs/ltxv-2b-0.9.6-dev.yaml)                                                 | [ltxvideo-i2v.json](https://github.com/Lightricks/ComfyUI-LTXVideo/example_workflows/low_level/ltxvideo-i2v.json)             |
+| ltxv-2b-distilled  | 0.9.6   | 15× faster, real-time capable, fewer steps needed, no STG/CFG required                     | [ltxv-2b-0.9.6-distilled.yaml](https://github.com/Lightricks/LTX-Video/blob/main/configs/ltxv-2b-0.9.6-distilled.yaml)                                     | [ltxvideo-i2v-distilled.json](https://github.com/Lightricks/ComfyUI-LTXVideo/example_workflows/low_level/ltxvideo-i2v-distilled.json)             |
+
+
 # Quick Start Guide
 
 ## Online inference
@@ -118,34 +139,22 @@ source env/bin/activate
 python -m pip install -e .\[inference-script\]
 ```
 
-Then, download the model from [Hugging Face](https://huggingface.co/Lightricks/LTX-Video)
-
-```python
-from huggingface_hub import hf_hub_download
-
-model_dir = 'MODEL_DIR'   # The local directory to save downloaded checkpoint
-
-# Distilled model:
-hf_hub_download(repo_id="Lightricks/LTX-Video", filename="ltxv-2b-0.9.6-distilled-04-25.safetensors", local_dir=model_dir, local_dir_use_symlinks=False, repo_type='model')
-
-# Full model:
-hf_hub_download(repo_id="Lightricks/LTX-Video", filename="ltxv-2b-0.9.6-dev-04-25.safetensors", local_dir=model_dir, local_dir_use_symlinks=False, repo_type='model')
-```
-
 ### Inference
+
+📝 **Note:** For best results, we recommend using our [ComfyUI](#comfyui-integration) workflow. We’re working on updating the inference.py script to match the high quality and output fidelity of ComfyUI.
 
 To use our model, please follow the inference code in [inference.py](./inference.py):
 
 #### For text-to-video generation:
 
 ```bash
-python inference.py --ckpt_path 'PATH' --prompt "PROMPT" --height HEIGHT --width WIDTH --num_frames NUM_FRAMES --seed SEED
+python inference.py --prompt "PROMPT" --height HEIGHT --width WIDTH --num_frames NUM_FRAMES --seed SEED --pipeline_config configs/ltxv-13b-0.9.7-dev.yaml
 ```
 
 #### For image-to-video generation:
 
 ```bash
-python inference.py --ckpt_path 'PATH' --prompt "PROMPT" --conditioning_media_paths IMAGE_PATH --conditioning_start_frames 0 --height HEIGHT --width WIDTH --num_frames NUM_FRAMES --seed SEED
+python inference.py --prompt "PROMPT" --conditioning_media_paths IMAGE_PATH --conditioning_start_frames 0 --height HEIGHT --width WIDTH --num_frames NUM_FRAMES --seed SEED --pipeline_config configs/ltxv-13b-0.9.7-dev.yaml
 ```
 
 #### Extending a video:
@@ -154,7 +163,7 @@ python inference.py --ckpt_path 'PATH' --prompt "PROMPT" --conditioning_media_pa
 
 
 ```bash
-python inference.py --ckpt_path 'PATH' --prompt "PROMPT" --conditioning_media_paths VIDEO_PATH --conditioning_start_frames START_FRAME --height HEIGHT --width WIDTH --num_frames NUM_FRAMES --seed SEED
+python inference.py --prompt "PROMPT" --conditioning_media_paths VIDEO_PATH --conditioning_start_frames START_FRAME --height HEIGHT --width WIDTH --num_frames NUM_FRAMES --seed SEED --pipeline_config configs/ltxv-13b-0.9.7-dev.yaml
 ```
 
 #### For video generation with multiple conditions:
@@ -163,7 +172,7 @@ You can now generate a video conditioned on a set of images and/or short video s
 Simply provide a list of paths to the images or video segments you want to condition on, along with their target frame numbers in the generated video. You can also specify the conditioning strength for each item (default: 1.0).
 
 ```bash
-python inference.py --ckpt_path 'PATH' --prompt "PROMPT" --conditioning_media_paths IMAGE_OR_VIDEO_PATH_1 IMAGE_OR_VIDEO_PATH_2 --conditioning_start_frames TARGET_FRAME_1 TARGET_FRAME_2 --height HEIGHT --width WIDTH --num_frames NUM_FRAMES --seed SEED
+python inference.py --prompt "PROMPT" --conditioning_media_paths IMAGE_OR_VIDEO_PATH_1 IMAGE_OR_VIDEO_PATH_2 --conditioning_start_frames TARGET_FRAME_1 TARGET_FRAME_2 --height HEIGHT --width WIDTH --num_frames NUM_FRAMES --seed SEED --pipeline_config configs/ltxv-13b-0.9.7-dev.yaml
 ```
 
 ## ComfyUI Integration
