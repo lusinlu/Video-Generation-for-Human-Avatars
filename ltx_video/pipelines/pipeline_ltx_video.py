@@ -1,10 +1,11 @@
 # Adapted from: https://github.com/huggingface/diffusers/blob/main/src/diffusers/pipelines/pixart_alpha/pipeline_pixart_alpha.py
+import copy
 import inspect
 import math
 import re
 from contextlib import nullcontext
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn.functional as F
@@ -37,6 +38,12 @@ from ltx_video.models.transformers.transformer3d import Transformer3DModel
 from ltx_video.schedulers.rf import TimestepShifter
 from ltx_video.utils.skip_layer_strategy import SkipLayerStrategy
 from ltx_video.utils.prompt_enhance_utils import generate_cinematic_prompt
+from ltx_video.models.autoencoders.latent_upsampler import LatentUpsampler
+from ltx_video.models.autoencoders.vae_encode import (
+    un_normalize_latents,
+    normalize_latents,
+)
+
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -120,6 +127,7 @@ def retrieve_timesteps(
     num_inference_steps: Optional[int] = None,
     device: Optional[Union[str, torch.device]] = None,
     timesteps: Optional[List[int]] = None,
+    max_timestep: Optional[float] = 1.0,
     **kwargs,
 ):
     """
@@ -135,9 +143,12 @@ def retrieve_timesteps(
         device (`str` or `torch.device`, *optional*):
             The device to which the timesteps should be moved to. If `None`, the timesteps are not moved.
         timesteps (`List[int]`, *optional*):
-                Custom timesteps used to support arbitrary spacing between timesteps. If `None`, then the default
-                timestep spacing strategy of the scheduler is used. If `timesteps` is passed, `num_inference_steps`
-                must be `None`.
+            Custom timesteps used to support arbitrary spacing between timesteps. If `None`, then the default
+            timestep spacing strategy of the scheduler is used. If `timesteps` is passed, `num_inference_steps`
+            must be `None`.
+        max_timestep ('float', *optional*, defaults to 1.0):
+            The initial noising level for image-to-image/video-to-video. The list if timestamps will be
+            truncated to start with a timestamp greater or equal to this.
 
     Returns:
         `Tuple[torch.Tensor, int]`: A tuple where the first element is the timestep schedule from the scheduler and the
@@ -158,6 +169,16 @@ def retrieve_timesteps(
     else:
         scheduler.set_timesteps(num_inference_steps, device=device, **kwargs)
         timesteps = scheduler.timesteps
+
+    if max_timestep < 1.0:
+        if max_timestep < timesteps.min():
+            raise ValueError(
+                f"max_timestep {max_timestep} is smaller than the minimum timestep {timesteps.min()}"
+            )
+        timesteps = timesteps[timesteps <= max_timestep]
+        num_inference_steps = len(timesteps)
+        scheduler.set_timesteps(timesteps=timesteps, device=device, **kwargs)
+
     return timesteps, num_inference_steps
 
 
@@ -165,15 +186,20 @@ def retrieve_timesteps(
 class ConditioningItem:
     """
     Defines a single frame-conditioning item - a single frame or a sequence of frames.
+
     Attributes:
-        media_item (torch.Tensor), shape=(b, 3, f, h, w): The media item to condition on.
+        media_item (torch.Tensor): shape=(b, 3, f, h, w). The media item to condition on.
         media_frame_number (int): The start-frame number of the media item in the generated video.
         conditioning_strength (float): The strength of the conditioning (1.0 = full conditioning).
+        media_x (Optional[int]): Optional left x coordinate of the media item in the generated frame.
+        media_y (Optional[int]): Optional top y coordinate of the media item in the generated frame.
     """
 
     media_item: torch.Tensor
     media_frame_number: int
     conditioning_strength: float
+    media_x: Optional[int] = None
+    media_y: Optional[int] = None
 
 
 class LTXVideoPipeline(DiffusionPipeline):
@@ -588,26 +614,82 @@ class LTXVideoPipeline(DiffusionPipeline):
     # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.StableDiffusionPipeline.prepare_latents
     def prepare_latents(
         self,
-        latent_shape,
-        dtype,
-        device,
-        generator,
+        latents: torch.Tensor | None,
+        media_items: torch.Tensor | None,
+        timestep: float,
+        latent_shape: torch.Size | Tuple[Any, ...],
+        dtype: torch.dtype,
+        device: torch.device,
+        generator: torch.Generator | List[torch.Generator],
+        vae_per_channel_normalize: bool = True,
     ):
+        """
+        Prepare the initial latent tensor to be denoised.
+        The latents are either pure noise or a noised version of the encoded media items.
+        Args:
+            latents (`torch.FloatTensor` or `None`):
+                The latents to use (provided by the user) or `None` to create new latents.
+            media_items (`torch.FloatTensor` or `None`):
+                An image or video to be updated using img2img or vid2vid. The media item is encoded and noised.
+            timestep (`float`):
+                The timestep to noise the encoded media_items to.
+            latent_shape (`torch.Size`):
+                The target latent shape.
+            dtype (`torch.dtype`):
+                The target dtype.
+            device (`torch.device`):
+                The target device.
+            generator (`torch.Generator` or `List[torch.Generator]`):
+                Generator(s) to be used for the noising process.
+            vae_per_channel_normalize ('bool'):
+                When encoding the media_items, whether to normalize the latents per-channel.
+        Returns:
+            `torch.FloatTensor`: The latents to be used for the denoising process. This is a tensor of shape
+            (batch_size, num_channels, height, width).
+        """
         if isinstance(generator, list) and len(generator) != latent_shape[0]:
             raise ValueError(
                 f"You have passed a list of generators of length {len(generator)}, but requested an effective batch"
                 f" size of {latent_shape[0]}. Make sure the batch size matches the length of the generators."
             )
 
+        # Initialize the latents with the given latents or encoded media item, if provided
+        assert (
+            latents is None or media_items is None
+        ), "Cannot provide both latents and media_items. Please provide only one of the two."
+
+        assert (
+            latents is None and media_items is None or timestep < 1.0
+        ), "Input media_item or latents are provided, but they will be replaced with noise."
+
+        if media_items is not None:
+            latents = vae_encode(
+                media_items.to(dtype=self.vae.dtype, device=self.vae.device),
+                self.vae,
+                vae_per_channel_normalize=vae_per_channel_normalize,
+            )
+        if latents is not None:
+            assert (
+                latents.shape == latent_shape
+            ), f"Latents have to be of shape {latent_shape} but are {latents.shape}."
+            latents = latents.to(device=device, dtype=dtype)
+
         # For backward compatibility, generate in the "patchified" shape and rearrange
         b, c, f, h, w = latent_shape
-        latents = randn_tensor(
+        noise = randn_tensor(
             (b, f * h * w, c), generator=generator, device=device, dtype=dtype
         )
-        latents = rearrange(latents, "b (f h w) c -> b c f h w", f=f, h=h, w=w)
+        noise = rearrange(noise, "b (f h w) c -> b c f h w", f=f, h=h, w=w)
 
         # scale the initial noise by the standard deviation required by the scheduler
-        latents = latents * self.scheduler.init_noise_sigma
+        noise = noise * self.scheduler.init_noise_sigma
+
+        if latents is None:
+            latents = noise
+        else:
+            # Noise the latents to the required (first) timestep
+            latents = timestep * noise + (1 - timestep) * latents
+
         return latents
 
     @staticmethod
@@ -633,14 +715,9 @@ class LTXVideoPipeline(DiffusionPipeline):
             resized_height = int(orig_height * ratio)
 
             # Resize
-            samples = rearrange(samples, "b c n h w -> (b n) c h w")
-            samples = F.interpolate(
-                samples,
-                size=(resized_height, resized_width),
-                mode="bilinear",
-                align_corners=False,
+            samples = LTXVideoPipeline.resize_tensor(
+                samples, resized_height, resized_width
             )
-            samples = rearrange(samples, "(b n) c h w -> b c n h w", n=n_frames)
 
             # Center Crop
             start_x = (resized_width - new_width) // 2
@@ -650,6 +727,20 @@ class LTXVideoPipeline(DiffusionPipeline):
             samples = samples[..., start_y:end_y, start_x:end_x]
 
         return samples
+
+    @staticmethod
+    def resize_tensor(media_items, height, width):
+        n_frames = media_items.shape[2]
+        if media_items.shape[-2:] != (height, width):
+            media_items = rearrange(media_items, "b c n h w -> (b n) c h w")
+            media_items = F.interpolate(
+                media_items,
+                size=(height, width),
+                mode="bilinear",
+                align_corners=False,
+            )
+            media_items = rearrange(media_items, "(b n) c h w -> b c n h w", n=n_frames)
+        return media_items
 
     @torch.no_grad()
     def __call__(
@@ -662,12 +753,12 @@ class LTXVideoPipeline(DiffusionPipeline):
         negative_prompt: str = "",
         num_inference_steps: int = 20,
         timesteps: List[int] = None,
-        guidance_scale: float = 4.5,
+        guidance_scale: Union[float, List[float]] = 4.5,
         skip_layer_strategy: Optional[SkipLayerStrategy] = None,
-        skip_block_list: Optional[List[int]] = None,
-        stg_scale: float = 1.0,
-        do_rescaling: bool = True,
-        rescaling_scale: float = 0.7,
+        skip_block_list: Optional[Union[List[List[int]], List[int]]] = None,
+        stg_scale: Union[float, List[float]] = 1.0,
+        rescaling_scale: Union[float, List[float]] = 0.7,
+        guidance_timesteps: Optional[List[int]] = None,
         num_images_per_prompt: Optional[int] = 1,
         eta: float = 0.0,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
@@ -687,6 +778,8 @@ class LTXVideoPipeline(DiffusionPipeline):
         enhance_prompt: bool = False,
         text_encoder_max_tokens: int = 256,
         stochastic_sampling: bool = False,
+        media_items: Optional[torch.Tensor] = None,
+        strength: Optional[float] = 1.0,
         **kwargs,
     ) -> Union[ImagePipelineOutput, Tuple]:
         """
@@ -702,7 +795,7 @@ class LTXVideoPipeline(DiffusionPipeline):
                 less than `1`).
             num_inference_steps (`int`, *optional*, defaults to 100):
                 The number of denoising steps. More denoising steps usually lead to a higher quality image at the
-                expense of slower inference.
+                expense of slower inference. If `timesteps` is provided, this parameter is ignored.
             timesteps (`List[int]`, *optional*):
                 Custom timesteps to use for the denoising process. If not defined, equal spaced `num_inference_steps`
                 timesteps are used. Must be in descending order.
@@ -741,7 +834,7 @@ class LTXVideoPipeline(DiffusionPipeline):
                 The output format of the generate image. Choose between
                 [PIL](https://pillow.readthedocs.io/en/stable/): `PIL.Image.Image` or `np.array`.
             return_dict (`bool`, *optional*, defaults to `True`):
-                Whether or not to return a [`~pipelines.stable_diffusion.IFPipelineOutput`] instead of a plain tuple.
+                Whether to return a [`~pipelines.stable_diffusion.IFPipelineOutput`] instead of a plain tuple.
             callback_on_step_end (`Callable`, *optional*):
                 A function that calls at the end of each denoising steps during the inference. The function is called
                 with the following arguments: `callback_on_step_end(self: DiffusionPipeline, step: int, timestep: int,
@@ -757,7 +850,12 @@ class LTXVideoPipeline(DiffusionPipeline):
                 The maximum number of tokens to use for the text encoder.
             stochastic_sampling (`bool`, *optional*, defaults to `False`):
                 If set to `True`, the sampling is stochastic. If set to `False`, the sampling is deterministic.
-
+            media_items ('torch.Tensor', *optional*):
+                The input media item used for image-to-image / video-to-video.
+                When provided, they will be noised according to 'strength' and then fully denoised.
+            strength ('floaty', *optional* defaults to 1.0):
+                The editing level in image-to-image / video-to-video. The provided input will be noised
+                to this level.
         Examples:
 
         Returns:
@@ -781,13 +879,6 @@ class LTXVideoPipeline(DiffusionPipeline):
             negative_prompt_attention_mask,
         )
 
-        if kwargs.get("media_items", None) is not None:
-            # Backwards compatibility mode for first-frame conditioning
-            assert (
-                conditioning_items is None
-            ), "Cannot pass both `conditioning_items` and `media_items`."
-            conditioning_items = [ConditioningItem(kwargs["media_items"], 0, 1.0)]
-
         # 2. Default height and width to transformer
         if prompt is not None and isinstance(prompt, str):
             batch_size = 1
@@ -798,11 +889,88 @@ class LTXVideoPipeline(DiffusionPipeline):
 
         device = self._execution_device
 
+        self.video_scale_factor = self.video_scale_factor if is_video else 1
+        vae_per_channel_normalize = kwargs.get("vae_per_channel_normalize", True)
+        image_cond_noise_scale = kwargs.get("image_cond_noise_scale", 0.0)
+
+        latent_height = height // self.vae_scale_factor
+        latent_width = width // self.vae_scale_factor
+        latent_num_frames = num_frames // self.video_scale_factor
+        if isinstance(self.vae, CausalVideoAutoencoder) and is_video:
+            latent_num_frames += 1
+        latent_shape = (
+            batch_size * num_images_per_prompt,
+            self.transformer.config.in_channels,
+            latent_num_frames,
+            latent_height,
+            latent_width,
+        )
+
+        # Prepare the list of denoising time-steps
+
+        retrieve_timesteps_kwargs = {}
+        if isinstance(self.scheduler, TimestepShifter):
+            retrieve_timesteps_kwargs["samples_shape"] = latent_shape
+
+        assert strength == 1.0 or latents is not None or media_items is not None, (
+            "strength < 1 is used for image-to-image/video-to-video - "
+            "media_item or latents should be provided."
+        )
+
+        timesteps, num_inference_steps = retrieve_timesteps(
+            self.scheduler,
+            num_inference_steps,
+            device,
+            timesteps,
+            max_timestep=strength,
+            **retrieve_timesteps_kwargs,
+        )
+        if self.allowed_inference_steps is not None:
+            for timestep in [round(x, 4) for x in timesteps.tolist()]:
+                assert (
+                    timestep in self.allowed_inference_steps
+                ), f"Invalid inference timestep {timestep}. Allowed timesteps are {self.allowed_inference_steps}."
+
+        if guidance_timesteps:
+            guidance_mapping = []
+            for timestep in timesteps:
+                indices = [
+                    i for i, val in enumerate(guidance_timesteps) if val <= timestep
+                ]
+                # assert len(indices) > 0, f"No guidance timestep found for {timestep}"
+                guidance_mapping.append(
+                    indices[0] if len(indices) > 0 else (len(guidance_timesteps) - 1)
+                )
+
         # here `guidance_scale` is defined analog to the guidance weight `w` of equation (2)
         # of the Imagen paper: https://arxiv.org/pdf/2205.11487.pdf . `guidance_scale = 1`
         # corresponds to doing no classifier free guidance.
-        do_classifier_free_guidance = guidance_scale > 1.0
-        do_spatio_temporal_guidance = stg_scale > 0.0
+        if not isinstance(guidance_scale, List):
+            guidance_scale = [guidance_scale] * len(timesteps)
+        else:
+            guidance_scale = [
+                guidance_scale[guidance_mapping[i]] for i in range(len(timesteps))
+            ]
+
+        # For simplicity, we are using a constant num_conds for all timesteps, so we need to zero
+        # out cases where the guidance scale should not be applied.
+        guidance_scale = [x if x > 1.0 else 0.0 for x in guidance_scale]
+
+        if not isinstance(stg_scale, List):
+            stg_scale = [stg_scale] * len(timesteps)
+        else:
+            stg_scale = [stg_scale[guidance_mapping[i]] for i in range(len(timesteps))]
+
+        if not isinstance(rescaling_scale, List):
+            rescaling_scale = [rescaling_scale] * len(timesteps)
+        else:
+            rescaling_scale = [
+                rescaling_scale[guidance_mapping[i]] for i in range(len(timesteps))
+            ]
+
+        do_classifier_free_guidance = any(x > 1.0 for x in guidance_scale)
+        do_spatio_temporal_guidance = any(x > 0.0 for x in stg_scale)
+        do_rescaling = any(x != 1.0 for x in rescaling_scale)
 
         num_conds = 1
         if do_classifier_free_guidance:
@@ -810,11 +978,27 @@ class LTXVideoPipeline(DiffusionPipeline):
         if do_spatio_temporal_guidance:
             num_conds += 1
 
-        skip_layer_mask = None
+        # Normalize skip_block_list to always be None or a list of lists matching timesteps
+        if skip_block_list is not None:
+            # Convert single list to list of lists if needed
+            if not isinstance(skip_block_list[0], list):
+                skip_block_list = [skip_block_list] * len(timesteps)
+            else:
+                new_skip_block_list = []
+                for i, timestep in enumerate(timesteps):
+                    new_skip_block_list.append(skip_block_list[guidance_mapping[i]])
+                skip_block_list = new_skip_block_list
+
+        # Prepare skip layer masks
+        skip_layer_masks: Optional[List[torch.Tensor]] = None
         if do_spatio_temporal_guidance:
-            skip_layer_mask = self.transformer.create_skip_layer_mask(
-                batch_size, num_conds, 2, skip_block_list
-            )
+            if skip_block_list is not None:
+                skip_layer_masks = [
+                    self.transformer.create_skip_layer_mask(
+                        batch_size, num_conds, num_conds - 1, skip_blocks
+                    )
+                    for skip_blocks in skip_block_list
+                ]
 
         if enhance_prompt:
             self.prompt_enhancer_image_caption_model = (
@@ -880,31 +1064,18 @@ class LTXVideoPipeline(DiffusionPipeline):
                 dim=0,
             )
 
-        # 3b. Encode and prepare conditioning data
-        self.video_scale_factor = self.video_scale_factor if is_video else 1
-        vae_per_channel_normalize = kwargs.get("vae_per_channel_normalize", False)
-        image_cond_noise_scale = kwargs.get("image_cond_noise_scale", 0.0)
+        # 4. Prepare the initial latents using the provided media and conditioning items
 
-        # 4. Prepare latents.
-        latent_height = height // self.vae_scale_factor
-        latent_width = width // self.vae_scale_factor
-        latent_num_frames = num_frames // self.video_scale_factor
-        if isinstance(self.vae, CausalVideoAutoencoder) and is_video:
-            latent_num_frames += 1
-        latent_shape = (
-            batch_size * num_images_per_prompt,
-            self.transformer.config.in_channels,
-            latent_num_frames,
-            latent_height,
-            latent_width,
-        )
-
-        # Prepare the initial random latents tensor, shape = (b, c, f, h, w)
+        # Prepare the initial latents tensor, shape = (b, c, f, h, w)
         latents = self.prepare_latents(
+            latents=latents,
+            media_items=media_items,
+            timestep=timesteps[0],
             latent_shape=latent_shape,
             dtype=prompt_embeds_batch.dtype,
             device=device,
             generator=generator,
+            vae_per_channel_normalize=vae_per_channel_normalize,
         )
 
         # Update the latents with the conditioning items and patchify them into (b, n, c)
@@ -928,23 +1099,6 @@ class LTXVideoPipeline(DiffusionPipeline):
             conditioning_mask = torch.cat([conditioning_mask] * num_conds)
         fractional_coords = pixel_coords.to(torch.float32)
         fractional_coords[:, 0] = fractional_coords[:, 0] * (1.0 / frame_rate)
-
-        # 5. Prepare timesteps
-        retrieve_timesteps_kwargs = {}
-        if isinstance(self.scheduler, TimestepShifter):
-            retrieve_timesteps_kwargs["samples"] = latents
-        timesteps, num_inference_steps = retrieve_timesteps(
-            self.scheduler,
-            num_inference_steps,
-            device,
-            timesteps,
-            **retrieve_timesteps_kwargs,
-        )
-        if self.allowed_inference_steps is not None:
-            for timestep in [round(x, 4) for x in timesteps.tolist()]:
-                assert (
-                    timestep in self.allowed_inference_steps
-                ), f"Invalid inference timestep {timestep}. Allowed timesteps are {self.allowed_inference_steps}."
 
         # 6. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
@@ -1005,11 +1159,6 @@ class LTXVideoPipeline(DiffusionPipeline):
 
                 # Choose the appropriate context manager based on `mixed_precision`
                 if mixed_precision:
-                    if "xla" in device.type:
-                        raise NotImplementedError(
-                            "Mixed precision is not supported yet on XLA devices."
-                        )
-
                     context_manager = torch.autocast(device.type, dtype=torch.bfloat16)
                 else:
                     context_manager = nullcontext()  # Dummy context manager
@@ -1024,7 +1173,11 @@ class LTXVideoPipeline(DiffusionPipeline):
                         ),
                         encoder_attention_mask=prompt_attention_mask_batch,
                         timestep=current_timestep,
-                        skip_layer_mask=skip_layer_mask,
+                        skip_layer_mask=(
+                            skip_layer_masks[i]
+                            if skip_layer_masks is not None
+                            else None
+                        ),
                         skip_layer_strategy=skip_layer_strategy,
                         return_dict=False,
                     )[0]
@@ -1036,16 +1189,16 @@ class LTXVideoPipeline(DiffusionPipeline):
                     )[-2:]
                 if do_classifier_free_guidance:
                     noise_pred_uncond, noise_pred_text = noise_pred.chunk(num_conds)[:2]
-                    noise_pred = noise_pred_uncond + guidance_scale * (
+                    noise_pred = noise_pred_uncond + guidance_scale[i] * (
                         noise_pred_text - noise_pred_uncond
                     )
                 elif do_spatio_temporal_guidance:
                     noise_pred = noise_pred_text
                 if do_spatio_temporal_guidance:
-                    noise_pred = noise_pred + stg_scale * (
+                    noise_pred = noise_pred + stg_scale[i] * (
                         noise_pred_text - noise_pred_text_perturb
                     )
-                    if do_rescaling:
+                    if do_rescaling and stg_scale[i] > 0.0:
                         noise_pred_text_std = noise_pred_text.view(batch_size, -1).std(
                             dim=1, keepdim=True
                         )
@@ -1054,7 +1207,7 @@ class LTXVideoPipeline(DiffusionPipeline):
                         )
 
                         factor = noise_pred_text_std / noise_pred_std
-                        factor = rescaling_scale * factor + (1 - rescaling_scale)
+                        factor = rescaling_scale[i] * factor + (1 - rescaling_scale[i])
 
                         noise_pred = noise_pred * factor.view(batch_size, 1, 1)
 
@@ -1127,6 +1280,7 @@ class LTXVideoPipeline(DiffusionPipeline):
                 vae_per_channel_normalize=kwargs["vae_per_channel_normalize"],
                 timestep=decode_timestep,
             )
+
             image = self.image_processor.postprocess(image, output_type=output_type)
 
         else:
@@ -1219,9 +1373,9 @@ class LTXVideoPipeline(DiffusionPipeline):
 
         if conditioning_items:
             batch_size, _, num_latent_frames = init_latents.shape[:3]
-            # Initialize the conditioning mask
-            conditioning_latent_frames_mask = torch.zeros(
-                (batch_size, num_latent_frames),
+
+            init_conditioning_mask = torch.zeros(
+                init_latents[:, 0, :, :, :].shape,
                 dtype=torch.float32,
                 device=init_latents.device,
             )
@@ -1233,12 +1387,17 @@ class LTXVideoPipeline(DiffusionPipeline):
 
             # Process each conditioning item
             for conditioning_item in conditioning_items:
+                conditioning_item = self._resize_conditioning_item(
+                    conditioning_item, height, width
+                )
                 media_item = conditioning_item.media_item
                 media_frame_number = conditioning_item.media_frame_number
                 strength = conditioning_item.conditioning_strength
                 assert media_item.ndim == 5  # (b, c, f, h, w)
                 b, c, n_frames, h, w = media_item.shape
-                assert height == h and width == w
+                assert (
+                    height == h and width == w
+                ) or media_frame_number == 0, f"Dimensions do not match: {height}x{width} != {h}x{w} - allowed only when media_frame_number == 0"
                 assert n_frames % 8 == 1
                 assert (
                     media_frame_number >= 0
@@ -1246,7 +1405,7 @@ class LTXVideoPipeline(DiffusionPipeline):
                 )
 
                 # Encode the provided conditioning media item
-                latents = vae_encode(
+                media_item_latents = vae_encode(
                     media_item.to(dtype=self.vae.dtype, device=self.vae.device),
                     self.vae,
                     vae_per_channel_normalize=vae_per_channel_normalize,
@@ -1254,40 +1413,60 @@ class LTXVideoPipeline(DiffusionPipeline):
 
                 # Handle the different conditioning cases
                 if media_frame_number == 0:
-                    # First frame or sequence - just update the initial noise latents and the mask
-                    f_l = latents.shape[2]
-                    init_latents[:, :, :f_l] = torch.lerp(
-                        init_latents[:, :, :f_l], latents, strength
+                    # Get the target spatial position of the latent conditioning item
+                    media_item_latents, l_x, l_y = self._get_latent_spatial_position(
+                        media_item_latents,
+                        conditioning_item,
+                        height,
+                        width,
+                        strip_latent_border=True,
                     )
-                    conditioning_latent_frames_mask[:, :f_l] = strength
+                    b, c_l, f_l, h_l, w_l = media_item_latents.shape
+
+                    # First frame or sequence - just update the initial noise latents and the mask
+                    init_latents[:, :, :f_l, l_y : l_y + h_l, l_x : l_x + w_l] = (
+                        torch.lerp(
+                            init_latents[:, :, :f_l, l_y : l_y + h_l, l_x : l_x + w_l],
+                            media_item_latents,
+                            strength,
+                        )
+                    )
+                    init_conditioning_mask[
+                        :, :f_l, l_y : l_y + h_l, l_x : l_x + w_l
+                    ] = strength
                 else:
                     # Non-first frame or sequence
                     if n_frames > 1:
                         # Handle non-first sequence.
                         # Encoded latents are either fully consumed, or the prefix is handled separately below.
-                        init_latents, conditioning_latent_frames_mask, latents = (
-                            self._handle_non_first_conditioning_sequence(
-                                init_latents,
-                                conditioning_latent_frames_mask,
-                                latents,
-                                media_frame_number,
-                                strength,
-                            )
+                        (
+                            init_latents,
+                            init_conditioning_mask,
+                            media_item_latents,
+                        ) = self._handle_non_first_conditioning_sequence(
+                            init_latents,
+                            init_conditioning_mask,
+                            media_item_latents,
+                            media_frame_number,
+                            strength,
                         )
 
-                    if latents is not None:  # Single frame or sequence-prefix latents
+                    # Single frame or sequence-prefix latents
+                    if media_item_latents is not None:
                         noise = randn_tensor(
-                            latents.shape,
+                            media_item_latents.shape,
                             generator=generator,
-                            device=latents.device,
-                            dtype=latents.dtype,
+                            device=media_item_latents.device,
+                            dtype=media_item_latents.dtype,
                         )
 
-                        latents = torch.lerp(noise, latents, strength)
+                        media_item_latents = torch.lerp(
+                            noise, media_item_latents, strength
+                        )
 
                         # Patchify the extra conditioning latents and calculate their pixel coordinates
-                        latents, latent_coords = self.patchifier.patchify(
-                            latents=latents
+                        media_item_latents, latent_coords = self.patchifier.patchify(
+                            latents=media_item_latents
                         )
                         pixel_coords = latent_to_pixel_coords(
                             latent_coords,
@@ -1297,16 +1476,16 @@ class LTXVideoPipeline(DiffusionPipeline):
 
                         # Update the frame numbers to match the target frame number
                         pixel_coords[:, 0] += media_frame_number
-                        extra_conditioning_num_latents += latents.shape[1]
+                        extra_conditioning_num_latents += media_item_latents.shape[1]
 
                         conditioning_mask = torch.full(
-                            latents.shape[:2],
+                            media_item_latents.shape[:2],
                             strength,
                             dtype=torch.float32,
-                            device=conditioning_latent_frames_mask.device,
+                            device=init_latents.device,
                         )
 
-                        extra_conditioning_latents.append(latents)
+                        extra_conditioning_latents.append(media_item_latents)
                         extra_conditioning_pixel_coords.append(pixel_coords)
                         extra_conditioning_mask.append(conditioning_mask)
 
@@ -1323,10 +1502,10 @@ class LTXVideoPipeline(DiffusionPipeline):
         if not conditioning_items:
             return init_latents, init_pixel_coords, None, 0
 
-        # Create a per-token mask based on the updated conditioning_latent_frames_mask
-        init_conditioning_mask = conditioning_latent_frames_mask.gather(
-            1, init_latent_coords[:, 0]
+        init_conditioning_mask, _ = self.patchifier.patchify(
+            latents=init_conditioning_mask.unsqueeze(1)
         )
+        init_conditioning_mask = init_conditioning_mask.squeeze(-1)
 
         if extra_conditioning_latents:
             # Stack the extra conditioning latents, pixel coordinates and mask
@@ -1338,6 +1517,17 @@ class LTXVideoPipeline(DiffusionPipeline):
                 [*extra_conditioning_mask, init_conditioning_mask], dim=1
             )
 
+            if self.transformer.use_tpu_flash_attention:
+                # When flash attention is used, keep the original number of tokens by removing
+                #   tokens from the end.
+                init_latents = init_latents[:, :-extra_conditioning_num_latents]
+                init_pixel_coords = init_pixel_coords[
+                    :, :, :-extra_conditioning_num_latents
+                ]
+                init_conditioning_mask = init_conditioning_mask[
+                    :, :-extra_conditioning_num_latents
+                ]
+
         return (
             init_latents,
             init_pixel_coords,
@@ -1346,9 +1536,72 @@ class LTXVideoPipeline(DiffusionPipeline):
         )
 
     @staticmethod
+    def _resize_conditioning_item(
+        conditioning_item: ConditioningItem,
+        height: int,
+        width: int,
+    ):
+        if conditioning_item.media_x or conditioning_item.media_y:
+            raise ValueError(
+                "Provide media_item in the target size for spatial conditioning."
+            )
+        new_conditioning_item = copy.copy(conditioning_item)
+        new_conditioning_item.media_item = LTXVideoPipeline.resize_tensor(
+            conditioning_item.media_item, height, width
+        )
+        return new_conditioning_item
+
+    def _get_latent_spatial_position(
+        self,
+        latents: torch.Tensor,
+        conditioning_item: ConditioningItem,
+        height: int,
+        width: int,
+        strip_latent_border,
+    ):
+        """
+        Get the spatial position of the conditioning item in the latent space.
+        If requested, strip the conditioning latent borders that do not align with target borders.
+        (border latents look different then other latents and might confuse the model)
+        """
+        scale = self.vae_scale_factor
+        h, w = conditioning_item.media_item.shape[-2:]
+        assert (
+            h <= height and w <= width
+        ), f"Conditioning item size {h}x{w} is larger than target size {height}x{width}"
+        assert h % scale == 0 and w % scale == 0
+
+        # Compute the start and end spatial positions of the media item
+        x_start, y_start = conditioning_item.media_x, conditioning_item.media_y
+        x_start = (width - w) // 2 if x_start is None else x_start
+        y_start = (height - h) // 2 if y_start is None else y_start
+        x_end, y_end = x_start + w, y_start + h
+        assert (
+            x_end <= width and y_end <= height
+        ), f"Conditioning item {x_start}:{x_end}x{y_start}:{y_end} is out of bounds for target size {width}x{height}"
+
+        if strip_latent_border:
+            # Strip one latent from left/right and/or top/bottom, update x, y accordingly
+            if x_start > 0:
+                x_start += scale
+                latents = latents[:, :, :, :, 1:]
+
+            if y_start > 0:
+                y_start += scale
+                latents = latents[:, :, :, 1:, :]
+
+            if x_end < width:
+                latents = latents[:, :, :, :, :-1]
+
+            if y_end < height:
+                latents = latents[:, :, :, :-1, :]
+
+        return latents, x_start // scale, y_start // scale
+
+    @staticmethod
     def _handle_non_first_conditioning_sequence(
         init_latents: torch.Tensor,
-        conditioning_latent_frames_mask: torch.Tensor,
+        init_conditioning_mask: torch.Tensor,
         latents: torch.Tensor,
         media_frame_number: int,
         strength: float,
@@ -1362,8 +1615,7 @@ class LTXVideoPipeline(DiffusionPipeline):
         (or last) sequence in a longer video.
         Args:
             init_latents (torch.Tensor): The initial noise latents to be updated.
-            conditioning_latent_frames_mask (torch.Tensor): A mask indicating the conditioning-strength of each
-                latent token.
+            init_conditioning_mask (torch.Tensor): The initial conditioning mask to be updated.
             latents (torch.Tensor): The encoded conditioning item.
             media_frame_number (int): The target frame number of the first frame in the conditioning sequence.
             strength (float): The conditioning strength for the conditioning latents.
@@ -1391,7 +1643,7 @@ class LTXVideoPipeline(DiffusionPipeline):
                 strength,
             )
             # Mark these latent frames as conditioning latents
-            conditioning_latent_frames_mask[:, f_l_start:f_l_end] = strength
+            init_conditioning_mask[:, f_l_start:f_l_end] = strength
 
         # Handle the prefix-latents
         if prefix_latents_mode == "soft":
@@ -1406,7 +1658,7 @@ class LTXVideoPipeline(DiffusionPipeline):
                     strength,
                 )
                 # Mark these latent frames as conditioning latents
-                conditioning_latent_frames_mask[:, f_l_start:f_l_end] = strength
+                init_conditioning_mask[:, f_l_start:f_l_end] = strength
             latents = None  # No more latents to handle
         elif prefix_latents_mode == "drop":
             # Drop the prefix latents
@@ -1416,7 +1668,11 @@ class LTXVideoPipeline(DiffusionPipeline):
             latents = latents[:, :, :f_l_p]
         else:
             raise ValueError(f"Invalid prefix_latents_mode: {prefix_latents_mode}")
-        return init_latents, conditioning_latent_frames_mask, latents
+        return (
+            init_latents,
+            init_conditioning_mask,
+            latents,
+        )
 
     def trim_conditioning_sequence(
         self, start_frame: int, sequence_num_frames: int, target_num_frames: int
@@ -1437,3 +1693,77 @@ class LTXVideoPipeline(DiffusionPipeline):
         # Trim down to a multiple of temporal_scale_factor frames plus 1
         num_frames = (num_frames - 1) // scale_factor * scale_factor + 1
         return num_frames
+
+
+class LTXMultiScalePipeline:
+    def _upsample_latents(
+        self, latest_upsampler: LatentUpsampler, latents: torch.Tensor
+    ):
+        assert latents.device == latest_upsampler.device
+
+        latents = un_normalize_latents(
+            latents, self.vae, vae_per_channel_normalize=True
+        )
+        upsampled_latents = latest_upsampler(latents)
+        upsampled_latents = normalize_latents(
+            upsampled_latents, self.vae, vae_per_channel_normalize=True
+        )
+        return upsampled_latents
+
+    def __init__(
+        self, video_pipeline: LTXVideoPipeline, latent_upsampler: LatentUpsampler
+    ):
+        self.video_pipeline = video_pipeline
+        self.vae = video_pipeline.vae
+        self.latent_upsampler = latent_upsampler
+
+    def __call__(
+        self,
+        downscale_factor: float,
+        first_pass: dict,
+        second_pass: dict,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        original_kwargs = kwargs.copy()
+        original_output_type = kwargs["output_type"]
+        original_width = kwargs["width"]
+        original_height = kwargs["height"]
+
+        x_width = int(kwargs["width"] * downscale_factor)
+        downscaled_width = x_width - (x_width % self.video_pipeline.vae_scale_factor)
+        x_height = int(kwargs["height"] * downscale_factor)
+        downscaled_height = x_height - (x_height % self.video_pipeline.vae_scale_factor)
+
+        kwargs["output_type"] = "latent"
+        kwargs["width"] = downscaled_width
+        kwargs["height"] = downscaled_height
+        kwargs.update(**first_pass)
+        result = self.video_pipeline(*args, **kwargs)
+        latents = result.images
+
+        upsampled_latents = self._upsample_latents(self.latent_upsampler, latents)
+
+        kwargs = original_kwargs
+
+        kwargs["latents"] = upsampled_latents
+        kwargs["output_type"] = original_output_type
+        kwargs["width"] = downscaled_width * 2
+        kwargs["height"] = downscaled_height * 2
+        kwargs.update(**second_pass)
+
+        result = self.video_pipeline(*args, **kwargs)
+        if original_output_type != "latent":
+            num_frames = result.images.shape[2]
+            videos = rearrange(result.images, "b c f h w -> (b f) c h w")
+
+            videos = F.interpolate(
+                videos,
+                size=(original_height, original_width),
+                mode="bilinear",
+                align_corners=False,
+            )
+            videos = rearrange(videos, "(b f) c h w -> b c f h w", f=num_frames)
+            result.images = videos
+
+        return result

@@ -1,5 +1,6 @@
 import pytest
 import torch
+import yaml
 from inference import infer, create_ltx_video_pipeline
 from ltx_video.utils.skip_layer_strategy import SkipLayerStrategy
 
@@ -15,7 +16,7 @@ def pytest_make_parametrize_id(config, val, argname):
     ["unconditional", "first-frame", "first-sequence", "sequence-and-frame"],
     ids=lambda x: f"conditioning_test_mode={x}",
 )
-def test_infer_runs_on_real_path(test_paths, conditioning_test_mode):
+def test_infer_runs_on_real_path(tmp_path, test_paths, conditioning_test_mode):
     conditioning_params = {}
     if conditioning_test_mode == "unconditional":
         pass
@@ -34,7 +35,7 @@ def test_infer_runs_on_real_path(test_paths, conditioning_test_mode):
             test_paths["input_video_path"],
             test_paths["input_image_path"],
         ]
-        conditioning_params["conditioning_start_frames"] = [16, 32]
+        conditioning_params["conditioning_start_frames"] = [16, 67]
     else:
         raise ValueError(f"Unknown conditioning mode: {conditioning_test_mode}")
     test_paths = {
@@ -46,31 +47,98 @@ def test_infer_runs_on_real_path(test_paths, conditioning_test_mode):
     params = {
         "seed": 42,
         "num_inference_steps": 1,
+        "height": 512,
+        "width": 768,
+        "num_frames": 121,
+        "frame_rate": 25,
+        "prompt": "A young woman with wavy, shoulder-length light brown hair stands outdoors on a foggy day. She wears a cozy pink turtleneck sweater, with a serene expression and piercing blue eyes. A wooden fence and a misty, grassy field fade into the background, evoking a calm and introspective mood.",
+        "negative_prompt": "worst quality, inconsistent motion, blurry, jittery, distorted",
+        "offload_to_cpu": False,
+        "output_path": tmp_path,
+        "image_cond_noise_scale": 0.15,
+    }
+
+    config = {
+        "pipeline_type": "base",
         "num_images_per_prompt": 1,
         "guidance_scale": 2.5,
         "stg_scale": 1,
         "stg_rescale": 0.7,
         "stg_mode": "attention_values",
         "stg_skip_layers": "1,2,3",
-        "image_cond_noise_scale": 0.15,
-        "height": 288,
-        "width": 512,
-        "num_frames": 33,
-        "frame_rate": 25,
         "precision": "bfloat16",
         "decode_timestep": 0.05,
         "decode_noise_scale": 0.025,
-        "prompt": "A young woman with wavy, shoulder-length light brown hair stands outdoors on a foggy day. She wears a cozy pink turtleneck sweater, with a serene expression and piercing blue eyes. A wooden fence and a misty, grassy field fade into the background, evoking a calm and introspective mood.",
-        "negative_prompt": "worst quality, inconsistent motion, blurry, jittery, distorted",
-        "offload_to_cpu": False,
-        "prompt_enhancement_max_words": 1000,
+        "checkpoint_path": test_paths["ckpt_path"],
+        "text_encoder_model_name_or_path": test_paths[
+            "text_encoder_model_name_or_path"
+        ],
+        "prompt_enhancer_image_caption_model_name_or_path": test_paths[
+            "prompt_enhancer_image_caption_model_name_or_path"
+        ],
+        "prompt_enhancer_llm_model_name_or_path": test_paths[
+            "prompt_enhancer_llm_model_name_or_path"
+        ],
+        "prompt_enhancement_words_threshold": 120,
+        "stochastic_sampling": False,
+        "sampler": "from_checkpoint",
     }
 
-    infer(**{**conditioning_params, **test_paths, **params})
+    temp_config_path = tmp_path / "config.yaml"
+    with open(temp_config_path, "w") as f:
+        yaml.dump(config, f)
 
-    # test without prompt enhancement
-    params["prompt_enhancement_max_words"] = 0
-    infer(**{**conditioning_params, **test_paths, **params})
+    infer(**{**conditioning_params, **params, "pipeline_config": temp_config_path})
+
+
+def test_vid2vid(tmp_path, test_paths):
+    params = {
+        "seed": 42,
+        "image_cond_noise_scale": 0.15,
+        "height": 512,
+        "width": 768,
+        "num_frames": 25,
+        "frame_rate": 25,
+        "prompt": "A young woman with wavy, shoulder-length light brown hair stands outdoors on a foggy day. She wears a cozy pink turtleneck sweater, with a serene expression and piercing blue eyes. A wooden fence and a misty, grassy field fade into the background, evoking a calm and introspective mood.",
+        "negative_prompt": "worst quality, inconsistent motion, blurry, jittery, distorted",
+        "strength": 0.95,
+        "offload_to_cpu": False,
+        "input_media_path": test_paths["input_video_path"],
+    }
+
+    config = {
+        "num_inference_steps": 3,
+        "guidance_scale": 2.5,
+        "stg_scale": 1,
+        "stg_rescale": 0.7,
+        "stg_mode": "attention_values",
+        "stg_skip_layers": "1,2,3",
+        "precision": "bfloat16",
+        "decode_timestep": 0.05,
+        "decode_noise_scale": 0.025,
+        "sampler": "from_checkpoint",
+        "checkpoint_path": test_paths["ckpt_path"],
+        "text_encoder_model_name_or_path": test_paths[
+            "text_encoder_model_name_or_path"
+        ],
+        "prompt_enhancer_image_caption_model_name_or_path": test_paths[
+            "prompt_enhancer_image_caption_model_name_or_path"
+        ],
+        "prompt_enhancer_llm_model_name_or_path": test_paths[
+            "prompt_enhancer_llm_model_name_or_path"
+        ],
+        "prompt_enhancement_words_threshold": 120,
+    }
+    test_paths = {
+        k: v
+        for k, v in test_paths.items()
+        if k not in ["input_image_path", "input_video_path"]
+    }
+    temp_config_path = tmp_path / "config.yaml"
+    with open(temp_config_path, "w") as f:
+        yaml.dump(config, f)
+
+    infer(**{**test_paths, **params, "pipeline_config": temp_config_path})
 
 
 def get_device():
@@ -81,17 +149,8 @@ def get_device():
     return "cpu"
 
 
-def seed_everething(seed: int):
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
-    if torch.backends.mps.is_available():
-        torch.mps.manual_seed(seed)
-
-
-def test_pipeline_on_batch(test_paths):
+def test_pipeline_on_batch(tmp_path, test_paths):
     device = get_device()
-
     pipeline = create_ltx_video_pipeline(
         ckpt_path=test_paths["ckpt_path"],
         device=device,
@@ -108,27 +167,31 @@ def test_pipeline_on_batch(test_paths):
 
     params = {
         "seed": 42,
-        "num_inference_steps": 2,
-        "num_images_per_prompt": 1,
-        "guidance_scale": 2.5,
-        "do_rescaling": True,
-        "stg_scale": 1,
-        "rescaling_scale": 0.7,
-        "skip_layer_strategy": SkipLayerStrategy.AttentionValues,
-        "skip_block_list": [1, 2],
         "image_cond_noise_scale": 0.15,
-        "height": 288,
-        "width": 512,
+        "height": 512,
+        "width": 768,
         "num_frames": 1,
         "frame_rate": 25,
-        "decode_timestep": 0.05,
-        "decode_noise_scale": 0.025,
         "offload_to_cpu": False,
         "output_type": "pt",
         "is_video": False,
         "vae_per_channel_normalize": True,
         "mixed_precision": False,
     }
+
+    config = {
+        "num_inference_steps": 2,
+        "guidance_scale": 2.5,
+        "stg_scale": 1,
+        "rescaling_scale": 0.7,
+        "skip_block_list": [1, 2],
+        "decode_timestep": 0.05,
+        "decode_noise_scale": 0.025,
+    }
+
+    temp_config_path = tmp_path / "config.yaml"
+    with open(temp_config_path, "w") as f:
+        yaml.dump(config, f)
 
     first_prompt = "A vintage yellow car drives along a wet mountain road, its rear wheels kicking up a light spray as it moves. The camera follows close behind, capturing the curvature of the road as it winds through rocky cliffs and lush green hills. The sunlight pierces through scattered clouds, reflecting off the car's rain-speckled surface, creating a dynamic, cinematic moment. The scene conveys a sense of freedom and exploration as the car disappears into the distance."
     second_prompt = "A woman with blonde hair styled up, wearing a black dress with sequins and pearl earrings, looks down with a sad expression on her face. The camera remains stationary, focused on the woman's face. The lighting is dim, casting soft shadows on her face. The scene appears to be from a movie or TV show."
@@ -144,13 +207,14 @@ def test_pipeline_on_batch(test_paths):
         generators = [
             torch.Generator(device=device).manual_seed(params["seed"]) for _ in range(2)
         ]
-        seed_everething(params["seed"])
+        torch.manual_seed(params["seed"])
 
         images = pipeline(
             prompt=prompts,
             generator=generators,
             **sample,
             **params,
+            pipeline_config=temp_config_path,
         ).images
         return images
 
@@ -168,7 +232,7 @@ def test_pipeline_on_batch(test_paths):
     assert torch.allclose(image2_not_same, image2_same)
 
 
-def test_prompt_enhancement(test_paths, monkeypatch):
+def test_prompt_enhancement(tmp_path, test_paths, monkeypatch):
     # Create pipeline with prompt enhancement enabled
     device = get_device()
     pipeline = create_ltx_video_pipeline(
@@ -201,21 +265,12 @@ def test_prompt_enhancement(test_paths, monkeypatch):
     # Set up minimal parameters for a quick test
     params = {
         "seed": 42,
-        "num_inference_steps": 1,
-        "num_images_per_prompt": 1,
-        "guidance_scale": 2.5,
-        "do_rescaling": True,
-        "stg_scale": 1,
-        "rescaling_scale": 0.7,
-        "skip_layer_strategy": SkipLayerStrategy.AttentionValues,
-        "skip_block_list": [1, 2],
         "image_cond_noise_scale": 0.15,
-        "height": 288,
-        "width": 512,
+        "height": 512,
+        "width": 768,
+        "skip_layer_strategy": SkipLayerStrategy.AttentionValues,
         "num_frames": 1,
         "frame_rate": 25,
-        "decode_timestep": 0.05,
-        "decode_noise_scale": 0.025,
         "offload_to_cpu": False,
         "output_type": "pt",
         "is_video": False,
@@ -223,12 +278,28 @@ def test_prompt_enhancement(test_paths, monkeypatch):
         "mixed_precision": False,
     }
 
+    config = {
+        "pipeline_type": "base",
+        "num_inference_steps": 1,
+        "guidance_scale": 2.5,
+        "stg_scale": 1,
+        "rescaling_scale": 0.7,
+        "skip_block_list": [1, 2],
+        "decode_timestep": 0.05,
+        "decode_noise_scale": 0.025,
+    }
+
+    temp_config_path = tmp_path / "config.yaml"
+    with open(temp_config_path, "w") as f:
+        yaml.dump(config, f)
+
     # Run pipeline with prompt enhancement enabled
     _ = pipeline(
         prompt=original_prompt,
         negative_prompt="worst quality",
         enhance_prompt=True,
         **params,
+        pipeline_config=temp_config_path,
     )
 
     # Verify that the enhanced prompt was used
@@ -244,6 +315,7 @@ def test_prompt_enhancement(test_paths, monkeypatch):
         negative_prompt="worst quality",
         enhance_prompt=False,
         **params,
+        pipeline_config=temp_config_path,
     )
 
     # Verify that the original prompt was used
