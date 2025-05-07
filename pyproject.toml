@@ -35,3 +35,6 @@ inference-script = [
 test = [
     "pytest",
 ]
+
+[tool.setuptools.packages.find]
+include = ["ltx_video*"]
