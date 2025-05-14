@@ -30,7 +30,9 @@ dependencies = [
 inference-script = [
     "accelerate",
     "matplotlib",
-    "imageio[ffmpeg]"
+    "imageio[ffmpeg]",
+    "av",
+    "opencv-python"
 ]
 test = [
     "pytest",

@@ -101,13 +101,13 @@ def test_vid2vid(tmp_path, test_paths):
         "frame_rate": 25,
         "prompt": "A young woman with wavy, shoulder-length light brown hair stands outdoors on a foggy day. She wears a cozy pink turtleneck sweater, with a serene expression and piercing blue eyes. A wooden fence and a misty, grassy field fade into the background, evoking a calm and introspective mood.",
         "negative_prompt": "worst quality, inconsistent motion, blurry, jittery, distorted",
-        "strength": 0.95,
         "offload_to_cpu": False,
         "input_media_path": test_paths["input_video_path"],
     }
 
     config = {
         "num_inference_steps": 3,
+        "skip_initial_inference_steps": 1,
         "guidance_scale": 2.5,
         "stg_scale": 1,
         "stg_rescale": 0.7,
