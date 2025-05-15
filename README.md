@@ -17,9 +17,9 @@ This is the official repository for LTX-Video.
 
 - [Introduction](#introduction)
 - [What's new](#news)
-- [Models](#models)
+- [Models & Workflows](#models--workflows)
 - [Quick Start Guide](#quick-start-guide)
-  - [Online demo](#online-inference)
+  - [Use online](#online-inference)
   - [Run locally](#run-locally)
     - [Installation](#installation)
     - [Inference](#inference)
@@ -27,8 +27,8 @@ This is the official repository for LTX-Video.
   - [Diffusers Integration](#diffusers-integration)
 - [Model User Guide](#model-user-guide)
 - [Community Contribution](#community-contribution)
-- [Training](#training)
-- [Join Us!](#join-us-)
+- [Training](#⚡️-training)
+- [Join Us!](#🚀-join-us)
 - [Acknowledgement](#acknowledgement)
 
 # Introduction
@@ -65,11 +65,11 @@ The model supports text-to-image, image-to-video, keyframe-based animation, vide
     * Also released a LoRA version of the distilled model, [ltxv-13b-0.9.7-distilled-lora128](https://huggingface.co/Lightricks/LTX-Video/blob/main/ltxv-13b-0.9.7-distilled-lora128.safetensors)
         * Requires only 1GB of VRAM
         * Can be used with the full 13B model for fast inference
-- Release a new quantized distilled model [ltxv-13b-0.9.7-distilled-fp8](https://huggingface.co/Lightricks/LTX-Video/blob/main/ltxv-13b-0.9.7-distilled-fp8.safetensors) for *real-time* generation (on H100) with even less VRAM (Supported in the [official CompfyUI workflow](https://github.com/Lightricks/ComfyUI-LTXVideo/))
+- Release a new quantized distilled model [ltxv-13b-0.9.7-distilled-fp8](https://huggingface.co/Lightricks/LTX-Video/blob/main/ltxv-13b-0.9.7-distilled-fp8.safetensors) for *real-time* generation (on H100) with even less VRAM (Supported in the [official ComfyUI workflow](https://github.com/Lightricks/ComfyUI-LTXVideo/))
 
 ## May, 5th, 2025: New model 13B v0.9.7:
 - Release a new 13B model [ltxv-13b-0.9.7-dev](https://huggingface.co/Lightricks/LTX-Video/blob/main/ltxv-13b-0.9.7-dev.safetensors)
-- Release a new quantized model [ltxv-13b-0.9.7-dev-fp8](https://huggingface.co/Lightricks/LTX-Video/blob/main/ltxv-13b-0.9.7-dev-fp8.safetensors) for faster inference with less VRam (Supported in the [official CompfyUI workflow](https://github.com/Lightricks/ComfyUI-LTXVideo/))
+- Release a new quantized model [ltxv-13b-0.9.7-dev-fp8](https://huggingface.co/Lightricks/LTX-Video/blob/main/ltxv-13b-0.9.7-dev-fp8.safetensors) for faster inference with less VRAM (Supported in the [official ComfyUI workflow](https://github.com/Lightricks/ComfyUI-LTXVideo/))
 - Release a new upscalers
   * [ltxv-temporal-upscaler-0.9.7](https://huggingface.co/Lightricks/LTX-Video/blob/main/ltxv-temporal-upscaler-0.9.7.safetensors)
   * [ltxv-spatial-upscaler-0.9.7](https://huggingface.co/Lightricks/LTX-Video/blob/main/ltxv-spatial-upscaler-0.9.7.safetensors)
@@ -129,11 +129,11 @@ The model supports text-to-image, image-to-video, keyframe-based animation, vide
 | Name                    | Notes                                                                                      | inference.py config                                                                                                                                      | ComfyUI workflow (Recommended) |
 |-------------------------|--------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------|--------------------------------|
 | ltxv-13b-0.9.7-dev                   | Highest quality, requires more VRAM                                                        | [ltxv-13b-0.9.7-dev.yaml](https://github.com/Lightricks/LTX-Video/blob/main/configs/ltxv-13b-0.9.7-dev.yaml)                                             | [ltxv-13b-i2v-base.json](https://github.com/Lightricks/ComfyUI-LTXVideo/blob/master/example_workflows/ltxv-13b-i2v-base.json)             |
-| [ltxv-13b-0.9.7-mix](https://app.ltx.studio/motion-workspace?videoModel=ltxv-13b)            | Mix ltxv-13b-dev and ltxv-13b-distilled in the same multi-scale rendering workflow for balanced speed-quality | N/A                                             | [ltxv-13b-i2v-mix.json](https://github.com/Lightricks/ComfyUI-LTXVideo/blob/master/example_workflows/ltxv-13b-i2v-mixed-multiscale.json)             |
+| [ltxv-13b-0.9.7-mix](https://app.ltx.studio/motion-workspace?videoModel=ltxv-13b)            | Mix ltxv-13b-dev and ltxv-13b-distilled in the same multi-scale rendering workflow for balanced speed-quality | N/A                                             | [ltxv-13b-i2v-mixed-multiscale.json](https://github.com/Lightricks/ComfyUI-LTXVideo/blob/master/example_workflows/ltxv-13b-i2v-mixed-multiscale.json)             |
  [ltxv-13b-0.9.7-distilled](https://app.ltx.studio/motion-workspace?videoModel=ltxv)        | Faster, less VRAM usage, slight quality reduction compared to 13b. Ideal for rapid iterations | [ltxv-13b-0.9.7-distilled.yaml](https://github.com/Lightricks/LTX-Video/blob/main/configs/ltxv-13b-0.9.7-dev.yaml)                                    | [ltxv-13b-dist-i2v-base.json](https://github.com/Lightricks/ComfyUI-LTXVideo/blob/master/example_workflows/13b-distilled/ltxv-13b-dist-i2v-base.json) |
 | [ltxv-13b-0.9.7-distilled-lora128](https://huggingface.co/Lightricks/LTX-Video/blob/main/ltxv-13b-0.9.7-distilled-lora128.safetensors)         | LoRA to make ltxv-13b-dev behave like the distilled model | N/A                                    | N/A |
 | ltxv-13b-0.9.7-fp8               | Quantized version of ltxv-13b | Coming soon | [ltxv-13b-i2v-base-fp8.json](https://github.com/Lightricks/ComfyUI-LTXVideo/blob/master/example_workflows/ltxv-13b-i2v-base-fp8.json) |
-| ltxv-13b-0.9.7-distilled-fp8     | Quantized version of ltxv-13b-distilled | Coming soon | [ltxv-13b-dist-fp8-i2v-base.json](https://github.com/Lightricks/ComfyUI-LTXVideo/blob/master/example_workflows/13b-distilled/ltxv-13b-dist-fp8-i2v-base.json) |
+| ltxv-13b-0.9.7-distilled-fp8     | Quantized version of ltxv-13b-distilled | Coming soon | [ltxv-13b-dist-i2v-base-fp8.json](https://github.com/Lightricks/ComfyUI-LTXVideo/blob/master/example_workflows/13b-distilled/ltxv-13b-dist-i2v-base-fp8.json) |
 | ltxv-2b-0.9.6                     | Good quality, lower VRAM requirement than ltxv-13b                                         | [ltxv-2b-0.9.6-dev.yaml](https://github.com/Lightricks/LTX-Video/blob/main/configs/ltxv-2b-0.9.6-dev.yaml)                                                 | [ltxvideo-i2v.json](https://github.com/Lightricks/ComfyUI-LTXVideo/blob/master/example_workflows/low_level/ltxvideo-i2v.json)             |
 | ltxv-2b-0.9.6-distilled         | 15× faster, real-time capable, fewer steps needed, no STG/CFG required                     | [ltxv-2b-0.9.6-distilled.yaml](https://github.com/Lightricks/LTX-Video/blob/main/configs/ltxv-2b-0.9.6-distilled.yaml)                                     | [ltxvideo-i2v-distilled.json](https://github.com/Lightricks/ComfyUI-LTXVideo/blob/master/example_workflows/low_level/ltxvideo-i2v-distilled.json)             |
 
