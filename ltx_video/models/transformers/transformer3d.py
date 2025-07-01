@@ -268,7 +268,7 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
                 for key, value in state_dict.items()
                 if key.startswith("model.diffusion_model.")
             }
-        super().load_state_dict(state_dict, **kwargs)
+        super().load_state_dict(state_dict, *args, **kwargs)
 
     @classmethod
     def from_pretrained(

@@ -205,7 +205,6 @@ class BasicTransformerBlock(nn.Module):
         timestep: Optional[torch.LongTensor] = None,
         cross_attention_kwargs: Dict[str, Any] = None,
         class_labels: Optional[torch.LongTensor] = None,
-        added_cond_kwargs: Optional[Dict[str, torch.Tensor]] = None,
         skip_layer_mask: Optional[torch.Tensor] = None,
         skip_layer_strategy: Optional[SkipLayerStrategy] = None,
     ) -> torch.FloatTensor:
