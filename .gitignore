@@ -163,4 +163,6 @@ cython_debug/
 
 # From inference.py
 outputs/
-video_output_*.mp4
+*.mp4
+*.png
+!tests/utils/car.png

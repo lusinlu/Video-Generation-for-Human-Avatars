@@ -235,7 +235,7 @@ class CausalVideoAutoencoder(AutoencoderKLWrapper):
                     "compress_time",
                     "compress_all",
                     "compress_all_res",
-                    "compress_space_res",
+                    "compress_time_res",
                 ]
             ]
         )
@@ -608,7 +608,7 @@ class Decoder(nn.Module):
             block_params = block_params if isinstance(block_params, dict) else {}
             if block_name == "res_x_y":
                 output_channel = output_channel * block_params.get("multiplier", 2)
-            if block_name == "compress_all":
+            if block_name.startswith("compress"):
                 output_channel = output_channel * block_params.get("multiplier", 1)
 
         self.conv_in = make_conv_nd(
@@ -1303,20 +1303,15 @@ def create_video_autoencoder_demo_config(
     encoder_blocks = [
         ("res_x", {"num_layers": 2}),
         ("compress_space_res", {"multiplier": 2}),
-        ("res_x", {"num_layers": 2}),
         ("compress_time_res", {"multiplier": 2}),
-        ("res_x", {"num_layers": 1}),
         ("compress_all_res", {"multiplier": 2}),
-        ("res_x", {"num_layers": 1}),
         ("compress_all_res", {"multiplier": 2}),
         ("res_x", {"num_layers": 1}),
     ]
     decoder_blocks = [
         ("res_x", {"num_layers": 2, "inject_noise": False}),
         ("compress_all", {"residual": True, "multiplier": 2}),
-        ("res_x", {"num_layers": 2, "inject_noise": False}),
         ("compress_all", {"residual": True, "multiplier": 2}),
-        ("res_x", {"num_layers": 2, "inject_noise": False}),
         ("compress_all", {"residual": True, "multiplier": 2}),
         ("res_x", {"num_layers": 2, "inject_noise": False}),
     ]
