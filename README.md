@@ -2,14 +2,14 @@
 
 # LTX-Video
 
-This is the official repository for LTX-Video.
+[![Website](https://img.shields.io/badge/Website-LTXV-181717?logo=google-chrome)](https://www.lightricks.com/ltxv)
+[![Model](https://img.shields.io/badge/HuggingFace-Model-orange?logo=huggingface)](https://huggingface.co/Lightricks/LTX-Video)
+[![Demo](https://img.shields.io/badge/Demo-Try%20Now-brightgreen?logo=vercel)](https://app.ltx.studio/motion-workspace?videoModel=ltxv-13b)
+[![Paper](https://img.shields.io/badge/Paper-arXiv-B31B1B?logo=arxiv)](https://arxiv.org/abs/2501.00103)
+[![Trainer](https://img.shields.io/badge/LTXV-Trainer-9146FF?logo=github)](https://github.com/Lightricks/LTX-Video-Trainer)
+[![Discord](https://img.shields.io/badge/Join-Discord-5865F2?logo=discord)](https://discord.gg/Mn8BRgUKKy)
 
-[Website](https://www.lightricks.com/ltxv) |
-[Model](https://huggingface.co/Lightricks/LTX-Video) |
-[Demo](https://app.ltx.studio/motion-workspace?videoModel=ltxv-13b) |
-[Paper](https://arxiv.org/abs/2501.00103) |
-[Trainer](https://github.com/Lightricks/LTX-Video-Trainer) |
-[Discord](https://discord.gg/Mn8BRgUKKy)
+This is the official repository for LTX-Video.
 
 </div>
 
@@ -28,6 +28,7 @@ This is the official repository for LTX-Video.
 - [Model User Guide](#model-user-guide)
 - [Community Contribution](#community-contribution)
 - [Training](#training)
+- [Control Models](#control-models)
 - [Join Us!](#join-us-)
 - [Acknowledgement](#acknowledgement)
 
@@ -47,7 +48,23 @@ The model supports image-to-video, keyframe-based animation, video extension (bo
 | ![example4](./docs/_static/ltx-video_i2v_example_00004.gif) | ![example5](./docs/_static/ltx-video_i2v_example_00005.gif) |  ![example6](./docs/_static/ltx-video_i2v_example_00006.gif) |
 | ![example7](./docs/_static/ltx-video_i2v_example_00007.gif) |  ![example8](./docs/_static/ltx-video_i2v_example_00008.gif) | ![example9](./docs/_static/ltx-video_i2v_example_00009.gif) |
 
+### Controlled video examples
+| | | |
+|:---:|:---:|:---:|
+| ![control0](./docs/_static/ltx-video_ic_2v_example_00000.gif) | ![control1](./docs/_static/ltx-video_ic_2v_example_00001.gif) | ![control2](./docs/_static/ltx-video_ic_2v_example_00002.gif) |
+
+| | |
+|:---:|:---:|
+| ![control3](./docs/_static/ltx-video_ic_2v_example_00003.gif) | ![control4](./docs/_static/ltx-video_ic_2v_example_00004.gif) |
+
 # News
+
+## July, 8th, 2025: New Control Models Released!
+- Released three new control models for LTX-Video on HuggingFace:
+    * **Depth Control**: [LTX-Video-ICLoRA-depth-13b-0.9.7](https://huggingface.co/Lightricks/LTX-Video-ICLoRA-depth-13b-0.9.7)
+    * **Pose Control**: [LTX-Video-ICLoRA-pose-13b-0.9.7](https://huggingface.co/Lightricks/LTX-Video-ICLoRA-pose-13b-0.9.7)
+    * **Canny Control**: [LTX-Video-ICLoRA-canny-13b-0.9.7](https://huggingface.co/Lightricks/LTX-Video-ICLoRA-canny-13b-0.9.7)
+
 
 ## May, 14th, 2025: New distilled model 13B v0.9.7:
 - Release a new 13B distilled model [ltxv-13b-0.9.7-distilled](https://huggingface.co/Lightricks/LTX-Video/blob/main/ltxv-13b-0.9.7-distilled.safetensors)
@@ -162,7 +179,7 @@ python -m pip install -e \[inference\]
 
 ### Inference
 
-📝 **Note:** For best results, we recommend using our [ComfyUI](#comfyui-integration) workflow. We’re working on updating the inference.py script to match the high quality and output fidelity of ComfyUI.
+📝 **Note:** For best results, we recommend using our [ComfyUI](#comfyui-integration) workflow. We're working on updating the inference.py script to match the high quality and output fidelity of ComfyUI.
 
 To use our model, please follow the inference code in [inference.py](./inference.py):
 
@@ -290,11 +307,21 @@ please let us know by opening an issue or pull request.
 # ⚡️ Training
 
 We provide an open-source repository for fine-tuning the LTX-Video model: [LTX-Video-Trainer](https://github.com/Lightricks/LTX-Video-Trainer).
-This repository supports both the 2B and 13B model variants, enabling full fine-tuning as well as LoRA (Low-Rank Adaptation) fine-tuning for more efficient training.
+This repository supports both the 2B and 13B model variants, enabling full fine-tuning as well as LoRA (Low-Rank Adaptation) fine-tuning for more efficient training. This includes:
+
+- **Control LoRAs**: Train custom control models like depth, pose, and canny control
+- **Effect LoRAs**: Create specialized effects and transformations for video generation
 
 Explore the repository to customize the model for your specific use cases!
 More information and training instructions can be found in the [README](https://github.com/Lightricks/LTX-Video-Trainer/blob/main/README.md).
 
+# 🎬 Control Models
+
+[ComfyUI-LTXVideo](https://github.com/Lightricks/ComfyUI-LTXVideo) repository now contains workflows and models for 3 specialized models that enable precise control over LTX-Video generation:
+
+Pose Control, Depth Control and Canny Control
+
+**Example ComfyUI Workflow (for all control types):** [ic-lora.json](https://github.com/Lightricks/ComfyUI-LTXVideo/blob/main/example_workflows/ic_lora/ic-lora.json)
 
 # 🚀 Join Us
 
