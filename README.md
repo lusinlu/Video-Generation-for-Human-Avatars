@@ -321,7 +321,7 @@ More information and training instructions can be found in the [README](https://
 
 Pose Control, Depth Control and Canny Control
 
-**Example ComfyUI Workflow (for all control types):** [ic-lora.json](https://github.com/Lightricks/ComfyUI-LTXVideo/blob/main/example_workflows/ic_lora/ic-lora.json)
+**Example ComfyUI Workflow (for all control types):** [ic-lora.json](https://github.com/Lightricks/ComfyUI-LTXVideo/blob/master/example_workflows/ic_lora/ic-lora.json)
 
 # 🚀 Join Us
 
