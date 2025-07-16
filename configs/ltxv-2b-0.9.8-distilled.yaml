@@ -1,7 +1,7 @@
 pipeline_type: multi-scale
-checkpoint_path: "ltxv-13b-0.9.7-distilled.safetensors"
+checkpoint_path: "ltxv-2b-0.9.8-distilled.safetensors"
 downscale_factor: 0.6666666
-spatial_upscaler_model_path: "ltxv-spatial-upscaler-0.9.7.safetensors"
+spatial_upscaler_model_path: "ltxv-spatial-upscaler-0.9.8.safetensors"
 stg_mode: "attention_values" # options: "attention_values", "attention_skip", "residual", "transformer_block"
 decode_timestep: 0.05
 decode_noise_scale: 0.025

@@ -790,6 +790,7 @@ class LTXVideoPipeline(DiffusionPipeline):
         text_encoder_max_tokens: int = 256,
         stochastic_sampling: bool = False,
         media_items: Optional[torch.Tensor] = None,
+        tone_map_compression_ratio: float = 0.0,
         **kwargs,
     ) -> Union[ImagePipelineOutput, Tuple]:
         """
@@ -871,6 +872,8 @@ class LTXVideoPipeline(DiffusionPipeline):
                 If set to `True`, the sampling is stochastic. If set to `False`, the sampling is deterministic.
             media_items ('torch.Tensor', *optional*):
                 The input media item used for image-to-image / video-to-video.
+            tone_map_compression_ratio: compression ratio for tone mapping, defaults to 0.0.
+                        If set to 0.0, no tone mapping is applied. If set to 1.0 - full compression is applied.
         Examples:
 
         Returns:
@@ -1320,6 +1323,7 @@ class LTXVideoPipeline(DiffusionPipeline):
                 )
             else:
                 decode_timestep = None
+            latents = self.tone_map_latents(latents, tone_map_compression_ratio)
             image = vae_decode(
                 latents,
                 self.vae,
@@ -1740,6 +1744,47 @@ class LTXVideoPipeline(DiffusionPipeline):
         # Trim down to a multiple of temporal_scale_factor frames plus 1
         num_frames = (num_frames - 1) // scale_factor * scale_factor + 1
         return num_frames
+
+    @staticmethod
+    def tone_map_latents(
+        latents: torch.Tensor,
+        compression: float,
+    ) -> torch.Tensor:
+        """
+        Applies a non-linear tone-mapping function to latent values to reduce their dynamic range
+        in a perceptually smooth way using a sigmoid-based compression.
+
+        This is useful for regularizing high-variance latents or for conditioning outputs
+        during generation, especially when controlling dynamic behavior with a `compression` factor.
+
+        Parameters:
+        ----------
+        latents : torch.Tensor
+            Input latent tensor with arbitrary shape. Expected to be roughly in [-1, 1] or [0, 1] range.
+        compression : float
+            Compression strength in the range [0, 1].
+            - 0.0: No tone-mapping (identity transform)
+            - 1.0: Full compression effect
+
+        Returns:
+        -------
+        torch.Tensor
+            The tone-mapped latent tensor of the same shape as input.
+        """
+        if not (0 <= compression <= 1):
+            raise ValueError("Compression must be in the range [0, 1]")
+
+        # Remap [0-1] to [0-0.75] and apply sigmoid compression in one shot
+        scale_factor = compression * 0.75
+        abs_latents = torch.abs(latents)
+
+        # Sigmoid compression: sigmoid shifts large values toward 0.2, small values stay ~1.0
+        # When scale_factor=0, sigmoid term vanishes, when scale_factor=0.75, full effect
+        sigmoid_term = torch.sigmoid(4.0 * scale_factor * (abs_latents - 1.0))
+        scales = 1.0 - 0.8 * scale_factor * sigmoid_term
+
+        filtered = latents * scales
+        return filtered
 
 
 def adain_filter_latent(
