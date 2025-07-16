@@ -1,12 +1,12 @@
 pipeline_type: multi-scale
-checkpoint_path: "ltxv-13b-0.9.7-dev.safetensors"
+checkpoint_path: "ltxv-13b-0.9.8-dev-fp8.safetensors"
 downscale_factor: 0.6666666
-spatial_upscaler_model_path: "ltxv-spatial-upscaler-0.9.7.safetensors"
+spatial_upscaler_model_path: "ltxv-spatial-upscaler-0.9.8.safetensors"
 stg_mode: "attention_values" # options: "attention_values", "attention_skip", "residual", "transformer_block"
 decode_timestep: 0.05
 decode_noise_scale: 0.025
 text_encoder_model_name_or_path: "PixArt-alpha/PixArt-XL-2-1024-MS"
-precision: "bfloat16"
+precision: "float8_e4m3fn" # options: "float8_e4m3fn", "bfloat16", "mixed_precision"
 sampler: "from_checkpoint" # options: "uniform", "linear-quadratic", "from_checkpoint"
 prompt_enhancement_words_threshold: 120
 prompt_enhancer_image_caption_model_name_or_path: "MiaoshouAI/Florence-2-large-PromptGen-v2.0"
