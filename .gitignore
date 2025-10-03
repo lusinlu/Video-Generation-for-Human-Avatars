@@ -166,3 +166,4 @@ outputs/
 *.mp4
 *.png
 !tests/utils/car.png
+.DS_Store
