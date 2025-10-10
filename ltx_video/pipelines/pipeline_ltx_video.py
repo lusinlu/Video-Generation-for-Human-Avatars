@@ -669,13 +669,14 @@ class LTXVideoPipeline(DiffusionPipeline):
         assert (
             latents is None and media_items is None or timestep < 1.0
         ), "Input media_item or latents are provided, but they will be replaced with noise."
-
         if media_items is not None:
             latents = vae_encode(
                 media_items.to(dtype=self.vae.dtype, device=self.vae.device),
                 self.vae,
                 vae_per_channel_normalize=vae_per_channel_normalize,
             )
+
+
         if latents is not None:
             assert (
                 latents.shape == latent_shape
@@ -1016,7 +1017,6 @@ class LTXVideoPipeline(DiffusionPipeline):
                 conditioning_items,
                 max_new_tokens=text_encoder_max_tokens,
             )
-
         # 3. Encode input prompt
         if self.text_encoder is not None:
             self.text_encoder = self.text_encoder.to(self._execution_device)
@@ -1069,7 +1069,7 @@ class LTXVideoPipeline(DiffusionPipeline):
             dim=0,
         )
         # 4. Prepare the initial latents using the provided media and conditioning items
-
+        self.vae = self.vae.to(device)
         # Prepare the initial latents tensor, shape = (b, c, f, h, w)
         latents = self.prepare_latents(
             latents=latents,
@@ -1081,7 +1081,8 @@ class LTXVideoPipeline(DiffusionPipeline):
             generator=generator,
             vae_per_channel_normalize=vae_per_channel_normalize,
         )
-
+        if offload_to_cpu and self.vae is not None:
+            self.vae = self.vae.cpu()
         # Update the latents with the conditioning items and patchify them into (b, n, c)
         latents, pixel_coords, conditioning_mask, num_cond_latents = (
             self.prepare_conditioning(
@@ -1304,6 +1305,7 @@ class LTXVideoPipeline(DiffusionPipeline):
             out_channels=self.transformer.in_channels
             // math.prod(self.patchifier.patch_size),
         )
+        self.vae = self.vae.to(self._execution_device)
         if output_type != "latent":
             if self.vae.decoder.timestep_conditioning:
                 noise = torch.randn_like(latents)
@@ -1331,6 +1333,8 @@ class LTXVideoPipeline(DiffusionPipeline):
                 vae_per_channel_normalize=kwargs["vae_per_channel_normalize"],
                 timestep=decode_timestep,
             )
+            if offload_to_cpu and self.vae is not None:
+                self.vae = self.vae.cpu()
 
             image = self.image_processor.postprocess(image, output_type=output_type)
 

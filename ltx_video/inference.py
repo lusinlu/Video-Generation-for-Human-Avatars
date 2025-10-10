@@ -244,9 +244,9 @@ def create_ltx_video_pipeline(
         text_encoder_model_name_or_path, subfolder="tokenizer"
     )
 
-    transformer = transformer.to(device)
-    vae = vae.to(device)
-    text_encoder = text_encoder.to(device)
+    # transformer = transformer.to(device)
+    # vae = vae.to(device)
+    # text_encoder = text_encoder.to(device)
 
     if enhance_prompt:
         prompt_enhancer_image_caption_model = AutoModelForCausalLM.from_pretrained(
@@ -288,6 +288,8 @@ def create_ltx_video_pipeline(
 
     pipeline = LTXVideoPipeline(**submodel_dict)
     pipeline = pipeline.to(device)
+    # Move light components to GPU first
+   
     return pipeline
 
 
@@ -346,7 +348,7 @@ class InferenceConfig:
         default=30, metadata={"help": "Frame rate for the output video"}
     )
     offload_to_cpu: bool = field(
-        default=False, metadata={"help": "Offloading unnecessary computations to CPU."}
+        default=True, metadata={"help": "Offloading unnecessary computations to CPU."}
     )
     negative_prompt: str = field(
         default="worst quality, inconsistent motion, blurry, jittery, distorted",

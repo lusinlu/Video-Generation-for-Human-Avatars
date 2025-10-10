@@ -384,3 +384,15 @@ class RectifiedFlowScheduler(SchedulerMixin, ConfigMixin, TimestepShifter):
         alphas = 1 - sigmas
         noisy_samples = alphas * original_samples + sigmas * noise
         return noisy_samples
+
+    def alpha(self, t):
+        return 1 - t
+
+    def sigma(self, t):
+        return t
+
+    def alpha_dot(self, t):
+        return torch.full_like(t, -1.0)
+
+    def sigma_dot(self, t):
+        return torch.full_like(t, 1.0)

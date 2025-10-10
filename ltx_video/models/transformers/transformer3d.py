@@ -31,6 +31,25 @@ from ltx_video.utils.diffusers_config_mapping import (
 logger = logging.get_logger(__name__)
 
 
+class AudioProjection(nn.Module):
+    """
+    Projects caption embeddings. Also handles dropout for classifier-free guidance.
+
+    """
+
+    def __init__(self, in_features, hidden_size):
+        super().__init__()
+        self.linear_1 = nn.Linear(in_features=in_features, out_features=hidden_size, bias=True)
+        self.act_1 = nn.GELU(approximate="tanh")
+        self.linear_2 = nn.Linear(in_features=hidden_size, out_features=hidden_size, bias=True)
+
+    def forward(self, caption):
+        hidden_states = self.linear_1(caption)
+        hidden_states = self.act_1(hidden_states)
+        hidden_states = self.linear_2(hidden_states)
+        return hidden_states
+
+
 @dataclass
 class Transformer3DModelOutput(BaseOutput):
     """
@@ -82,6 +101,10 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
         causal_temporal_positioning: bool = False,  # For backward compatibility, will be deprecated
     ):
         super().__init__()
+        # Core architectural and positional settings for a 3D transformer used in diffusion.
+        # This module processes spatiotemporal token sequences (video latents) possibly conditioned on text.
+        # Fine-tuning guidance: Common adaptation targets include attention projections inside
+        # `BasicTransformerBlock`, the input/output linear projections, and normalization/adaptive layers.
         self.use_tpu_flash_attention = (
             use_tpu_flash_attention  # FIXME: push config down to the attention modules
         )
@@ -90,10 +113,13 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
         self.attention_head_dim = attention_head_dim
         inner_dim = num_attention_heads * attention_head_dim
         self.inner_dim = inner_dim
+        # Input token projection: maps per-token channel dimension to model inner_dim for attention blocks.
+        # Fine-tuning: lightweight adapters or LoRA can be added here to adapt input statistics to a new domain.
         self.patchify_proj = nn.Linear(in_channels, inner_dim, bias=True)
         self.positional_embedding_type = positional_embedding_type
         self.positional_embedding_theta = positional_embedding_theta
         self.positional_embedding_max_pos = positional_embedding_max_pos
+        # RoPE (rotary positional embeddings) flag enabling frequency-based positional encoding across (t, h, w).
         self.use_rope = self.positional_embedding_type == "rope"
         self.timestep_scale_multiplier = timestep_scale_multiplier
 
@@ -110,6 +136,12 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
                 )
 
         # 3. Define transformers blocks
+        # Stack of `BasicTransformerBlock`s implementing self/cross-attention + MLP with optional AdaNorm variants.
+        # Each block is where most capacity lives and the primary target for LoRA or adapter injection.
+        # Fine-tuning:
+        # - Insert LoRA on attention q/k/v/out projections inside `BasicTransformerBlock`.
+        # - Add lightweight MLP adapters between attention and MLP sublayers.
+        # - Freeze all but a subset of upper blocks for stable domain adaptation.
         self.transformer_blocks = nn.ModuleList(
             [
                 BasicTransformerBlock(
@@ -138,22 +170,34 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
         )
 
         # 4. Define output layers
+        # Normalization + scale/shift modulation + projection back to latent channel space.
         self.out_channels = in_channels if out_channels is None else out_channels
+        # Output normalization prior to modulation. Often kept frozen in parameter-efficient tuning.
         self.norm_out = nn.LayerNorm(inner_dim, elementwise_affine=False, eps=1e-6)
         self.scale_shift_table = nn.Parameter(
             torch.randn(2, inner_dim) / inner_dim**0.5
         )
+        # Output projection: maps model representation back to the latent token channel dimension.
+        # Fine-tuning: LoRA on this projection can help adapt output distribution with minimal parameters.
         self.proj_out = nn.Linear(inner_dim, self.out_channels)
 
+        # AdaLayerNormSingle: time-conditioning modulator producing per-token scale/shift given diffusion timestep.
+        # Inputs: flattened `timestep` embedding; Outputs: normalized embedding + a learned linear that produces
+        #         modulation vectors used later for residual conditioning.
+        # Fine-tuning: swap linear to higher-rank (as below) or add LoRA on its internal linear for time-adaptation.
         self.adaln_single = AdaLayerNormSingle(
             inner_dim, use_additional_conditions=False
         )
         if adaptive_norm == "single_scale":
+            # When using single_scale mode, extend the AdaLN capacity to 4x for richer modulation.
+            # Fine-tuning: a good target to add LoRA for per-timestep adaptation without touching attention.
             self.adaln_single.linear = nn.Linear(inner_dim, 4 * inner_dim, bias=True)
 
         self.caption_projection = None
         if caption_channels is not None:
-            self.caption_projection = PixArtAlphaTextProjection(
+            # Projects external caption/text features to the transformer hidden size for cross-attention.
+            # Fine-tuning: adapters or LoRA on this small projection can align a new T5/text encoder without full retrain.
+            self.caption_projection = AudioProjection(
                 in_features=caption_channels, hidden_size=inner_dim
             )
 
@@ -177,6 +221,8 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
         ptb_index: int,
         skip_block_list: Optional[List[int]] = None,
     ):
+        # Create a per-layer mask indicating blocks to bypass during guidance/perturbations.
+        # Fine-tuning: probing the effect of skipping specific layers can help decide which layers to unfreeze.
         if skip_block_list is None or len(skip_block_list) == 0:
             return None
         num_layers = len(self.transformer_blocks)
@@ -192,6 +238,8 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
             module.gradient_checkpointing = value
 
     def get_fractional_positions(self, indices_grid):
+        # Convert token indices in (t, y, x) into normalized fractional positions in [0, 1] per axis.
+        # Used downstream for generating rotary positional embedding frequencies.
         fractional_positions = torch.stack(
             [
                 indices_grid[:, i] / self.positional_embedding_max_pos[i]
@@ -202,6 +250,10 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
         return fractional_positions
 
     def precompute_freqs_cis(self, indices_grid, spacing="exp"):
+        # Pre-compute cosine/sine frequency tensors for RoPE across 3D positions.
+        # spacing: controls frequency allocation ("exp", "exp_2", "linear", "sqrt").
+        # Returns: cos and sin frequency tensors used by attention to rotate query/key features.
+        # Fine-tuning: typically frozen; customizing theta/spacing adapts positional biasing for different video scales.
         dtype = torch.float32  # We need full precision in the freqs_cis computation.
         dim = self.inner_dim
         theta = self.positional_embedding_theta
@@ -262,6 +314,7 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
         *args,
         **kwargs,
     ):
+        # Accept checkpoints exported from diffusers UNet naming by remapping to this transformer's keys.
         if any([key.startswith("model.diffusion_model.") for key in state_dict.keys()]):
             state_dict = {
                 key.replace("model.diffusion_model.", ""): value
@@ -309,12 +362,14 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
                     new_key = new_key.replace(replace_key, rename_key)
                 state_dict[new_key] = state_dict.pop(key)
 
+            # Construct the module on a meta device for memory-efficient weight loading.
             with torch.device("meta"):
                 transformer = cls.from_config(config)
             transformer.load_state_dict(state_dict, assign=True, strict=True)
         elif pretrained_model_path.is_file() and str(pretrained_model_path).endswith(
             ".safetensors"
         ):
+            # Single-file Comfy-compatible safetensors loading path with embedded config.
             comfy_single_file_state_dict = {}
             with safe_open(pretrained_model_path, framework="pt", device="cpu") as f:
                 metadata = f.metadata()
@@ -387,9 +442,8 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
         """
         # for tpu attention offload 2d token masks are used. No need to transform.
         if not self.use_tpu_flash_attention:
-            # ensure attention_mask is a bias, and give it a singleton query_tokens dimension.
-            #   we may have done this conversion already, e.g. if we came here via UNet2DConditionModel#forward.
-            #   we can tell by counting dims; if ndim == 2: it's a mask rather than a bias.
+            # Ensure attention masks are converted to additive bias form to broadcast over attention scores.
+            # If ndim == 2, convert (1=keep, 0=mask) into (0, -10000) logits bias.
             # expects mask of shape:
             #   [batch, key_tokens]
             # adds singleton query_tokens dimension:
@@ -405,22 +459,27 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
                 attention_mask = (1 - attention_mask.to(hidden_states.dtype)) * -10000.0
                 attention_mask = attention_mask.unsqueeze(1)
 
-            # convert encoder_attention_mask to a bias the same way we do for attention_mask
+            # Convert encoder cross-attention masks to bias form as well.
             if encoder_attention_mask is not None and encoder_attention_mask.ndim == 2:
                 encoder_attention_mask = (
                     1 - encoder_attention_mask.to(hidden_states.dtype)
                 ) * -10000.0
                 encoder_attention_mask = encoder_attention_mask.unsqueeze(1)
 
-        # 1. Input
+        # 1. Input token projection
+        # Map latent tokens to the model hidden size before attention.
         hidden_states = self.patchify_proj(hidden_states)
 
+        # Optional global rescaling of diffusion timestep, used to calibrate conditioning strength.
         if self.timestep_scale_multiplier:
             timestep = self.timestep_scale_multiplier * timestep
 
+        # Precompute RoPE frequencies for the current token grid.
         freqs_cis = self.precompute_freqs_cis(indices_grid)
 
         batch_size = hidden_states.shape[0]
+        # AdaLayerNormSingle produces (timestep, embedded_timestep) used as conditioning for blocks and output mod.
+        # Fine-tuning: LoRA on AdaLN can steer speaking style/tempo without touching attention weights.
         timestep, embedded_timestep = self.adaln_single(
             timestep.flatten(),
             {"resolution": None, "aspect_ratio": None},
@@ -436,12 +495,17 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
         # 2. Blocks
         if self.caption_projection is not None:
             batch_size = hidden_states.shape[0]
+            # Project text/caption features to hidden space for cross-attention.
+            # Fine-tuning: adapters here help align a new speaker ID/text domain.
             encoder_hidden_states = self.caption_projection(encoder_hidden_states)
             encoder_hidden_states = encoder_hidden_states.view(
                 batch_size, -1, hidden_states.shape[-1]
             )
 
         for block_idx, block in enumerate(self.transformer_blocks):
+            # Main transformer compute. Each block applies attention (self/cross) and MLP with optional skipping.
+            # Fine-tuning: apply LoRA to attention q/k/v/out or small adapters in MLP. You can also partially
+            # unfreeze top-k blocks for subject-specific motion/lip-sync adaptation.
             if self.training and self.gradient_checkpointing:
 
                 def create_custom_forward(module, return_dict=None):
@@ -492,13 +556,13 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
                     skip_layer_strategy=skip_layer_strategy,
                 )
 
-        # 3. Output
+        # 3. Output modulation and projection
         scale_shift_values = (
             self.scale_shift_table[None, None] + embedded_timestep[:, :, None]
         )
         shift, scale = scale_shift_values[:, :, 0], scale_shift_values[:, :, 1]
         hidden_states = self.norm_out(hidden_states)
-        # Modulation
+        # Modulation: apply AdaLN-derived scale/shift to the normalized hidden states.
         hidden_states = hidden_states * (1 + scale) + shift
         hidden_states = self.proj_out(hidden_states)
         if not return_dict:

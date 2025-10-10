@@ -1,0 +1,51 @@
+# Training configuration for talking avatars 
+checkpoint_path: "ltxv-2b-0.9.6-dev-04-25.safetensors"
+precision: "bfloat16"
+sampler: "uniform"  # options: "uniform", "linear-quadratic", "from_checkpoint"
+
+# Training-specific parameters
+train:
+  audio_latents_dir: "../../avatars_data/audio_latents"  # FaceFormer audio latents (*_ff.npy)
+  encoder_latents_dir: "../../avatars_data/encoder_latents"  # VAE encoder latents (*.pt)
+  
+  output_dir: "../outputs/avatars_checkpoints"
+  
+  batch_size: 8
+  num_epochs: 10
+  learning_rate: 1e-4
+  
+  # Memory optimization
+  gradient_checkpointing: true  
+  gradient_accumulation_steps: 2 
+  
+  # Model sharding (for multi-GPU training)
+  use_deepspeed: false  
+  deepspeed_config: "configs/ds_config_zero2.json"  # DeepSpeed ZeRO-2 or ZeRO-3
+  
+  # Logging & Experiment Tracking
+  wandb_project: "ltx-video-avatars"
+  wandb_run_name: null 
+  log_every_n_steps: 10  
+  save_every_n_epochs: 1 
+  
+  # LoRA parameters
+  lora_rank: 8
+  lora_alpha: 8
+  
+  # Audio encoder settings
+  audio_embed_dim: 64  # FaceFormer output dimension
+  
+  # Rectified Flow scheduler (training)
+  rf_num_train_timesteps: 1000
+  rf_sampler: "Uniform" 
+  rf_shifting: null  # optional: "simple", "interpolate", or null
+  rf_base_resolution: 1024 
+  rf_target_shift_terminal: null 
+  rf_shift: null 
+  
+  # SD3-style log-normal timestep sampling
+  rf_log_normal_mu: null  # e.g., 0.0 for log-normal sampling
+  rf_log_normal_sigma: null  # e.g., 1.0 for log-normal sampling
+  rf_quantile_min: 0.005  # clamp percentile min
+  rf_quantile_max: 0.999  # clamp percentile max
+
