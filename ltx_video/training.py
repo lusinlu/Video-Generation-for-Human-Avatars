@@ -8,12 +8,15 @@ from torch.utils.data import DataLoader
 import wandb
 from huggingface_hub import hf_hub_download
 from peft import LoraConfig, get_peft_model, get_peft_model_state_dict
+from ltx_video.utils.torch_utils import save_training_checkpoint
 import json
 from ltx_video.config import TrainConfig, load_train_config_from_yaml
 from ltx_video.models.transformers.symmetric_patchifier import SymmetricPatchifier
 from ltx_video.models.transformers.transformer3d import Transformer3DModel, AudioProjection
 from ltx_video.schedulers.rf import RectifiedFlowScheduler
-from ltx_video.dataset import LatentPairDataset, collate_latent_pairs
+from ltx_video.dataset import LatentPairDataset, ValidationDataset, collate_latent_pairs
+from ltx_video.validation import validate_epoch, validate_video
+from ltx_video.models.autoencoders.causal_video_autoencoder import CausalVideoAutoencoder
 try:
     import deepspeed
     from deepspeed.utils import logger as ds_logger
@@ -23,7 +26,7 @@ except ImportError:
         "Or set use_deepspeed: false in your config."
     )
 
-def build_transformer_for_lora_finetune(config: TrainConfig):
+def build_transformer(config: TrainConfig):
     ltxv_model_path = hf_hub_download(
             repo_id="Lightricks/LTX-Video",
             filename=config.checkpoint_path,
@@ -34,6 +37,9 @@ def build_transformer_for_lora_finetune(config: TrainConfig):
     else:
         model = Transformer3DModel.from_pretrained(ltxv_model_path)
     
+    model.config.caption_channels = int(config.audio_embed_dim)
+
+
     model.caption_projection = AudioProjection(
         in_features=config.audio_embed_dim,
         hidden_size=model.inner_dim
@@ -45,42 +51,39 @@ def build_transformer_for_lora_finetune(config: TrainConfig):
     return model
 
 
-def apply_lora_to_model(model: torch.nn.Module, config: TrainConfig):
+def apply_training_strategy(model: torch.nn.Module, config: TrainConfig, train_mode: str):
     """
-    Apply LoRA to cross-attention layers using PEFT library.
+    Configure trainable params:
+    - train_mode == "full": train entire model (no LoRA)
+    - train_mode == "lora_audio": apply LoRA to cross-attn and train LoRA + caption_projection
     """
-    # Make caption_projection modul trainable
-    if hasattr(model, "caption_projection") and model.caption_projection is not None:
-        for p in model.caption_projection.parameters():
+    if train_mode == "lora_audio":
+        target_modules = []
+        for i in range(len(model.transformer_blocks)):
+            target_modules.extend([
+                f"transformer_blocks.{i}.attn2.to_q",
+                f"transformer_blocks.{i}.attn2.to_k",
+                f"transformer_blocks.{i}.attn2.to_v",
+                f"transformer_blocks.{i}.attn2.to_out.0",
+            ])
+        lora_config = LoraConfig(
+            r=config.lora_rank,
+            lora_alpha=config.lora_alpha,
+            target_modules=target_modules,
+            lora_dropout=0.0,
+            bias="none",
+        )
+        model = get_peft_model(model, lora_config)
+        for n, p in model.named_parameters():
+            if ("lora_" in n) or ("caption_projection" in n):
+                p.requires_grad = True
+            else:
+                p.requires_grad = False
+        return model
+    else:
+        for _n, p in model.named_parameters():
             p.requires_grad = True
-    
-    # Configure LoRA to target only cross-attention layers (attn2)
-    target_modules = []
-    for i in range(len(model.transformer_blocks)):
-        target_modules.extend([
-            f"transformer_blocks.{i}.attn2.to_q",
-            f"transformer_blocks.{i}.attn2.to_k", 
-            f"transformer_blocks.{i}.attn2.to_v",
-            f"transformer_blocks.{i}.attn2.to_out.0",
-        ])
-    
-    lora_config = LoraConfig(
-        r=config.lora_rank,
-        lora_alpha=config.lora_alpha,
-        target_modules=target_modules,
-        lora_dropout=0.0,
-        bias="none",
-    )
-    
-    model = get_peft_model(model, lora_config)
-    
-    return model
-
-
-def compute_alpha_sigma(scheduler, t: torch.Tensor):
-    sigma = t
-    alpha = 1 - sigma
-    return alpha, sigma
+        return model
 
 
 def build_velocity_target(tokens: torch.Tensor, noise: torch.Tensor, t: torch.Tensor, scheduler, dt_eps: float = 1e-4):
@@ -129,8 +132,7 @@ def train_step(
     latents = batch["latents"].to(device=device, dtype=model_dtype)
     face_embeds = batch["audio_latents"].to(device=device, dtype=model_dtype)  # [B, 256, D]
     audio_mask = batch.get("audio_mask", None)  # [B, 256]
-    if audio_mask is not None:
-        audio_mask = audio_mask.to(device)
+    audio_mask = audio_mask.to(device)
     
     tokens, latent_coords = patchifier.patchify(latents)
     indices_grid = latent_coords
@@ -138,20 +140,15 @@ def train_step(
 
     B = tokens.shape[0]
 
-    if config.rf_log_normal_mu is not None and config.rf_log_normal_sigma is not None:
-        logn = torch.distributions.LogNormal(
-            torch.tensor(config.rf_log_normal_mu, device=device),
-            torch.tensor(config.rf_log_normal_sigma, device=device)
-        )
-        raw = logn.sample((B,))
-        t_raw = raw / (1 + raw)
-        qmin = config.rf_quantile_min
-        qmax = config.rf_quantile_max
-        t_low = torch.quantile(t_raw, qmin)
-        t_high = torch.quantile(t_raw, qmax)
-        t = t_raw.clamp(min=float(t_low), max=float(t_high))
-    else:
-        t = torch.rand((B,), device=device).clamp(min=1e-6, max=1.0)
+    logn = torch.distributions.LogNormal(
+        torch.tensor(config.rf_log_normal_mu, device=device),
+        torch.tensor(config.rf_log_normal_sigma, device=device)
+    )
+    raw = logn.sample((B,))
+    t_raw = raw / (1 + raw)
+    t_low = torch.quantile(t_raw, config.rf_quantile_min)
+    t_high = torch.quantile(t_raw, config.rf_quantile_max)
+    t = t_raw.clamp(min=float(t_low), max=float(t_high))
 
     # Apply resolution-dependent shift
     samples_shape = tokens.view(B, -1, tokens.shape[-1]).shape
@@ -174,18 +171,13 @@ def train_step(
         encoder_attention_mask=audio_mask, 
         return_dict=True,
     )
-    pred = out.sample
+    mean_target = v_target.mean() 
+    std_target = v_target.std()
+    loss = F.mse_loss(out.sample, v_target, reduction="mean")
+    rel_mse = loss / (std_target**2 + 1e-12)
+    nrmse = torch.sqrt(loss) / (std_target + 1e-12)
 
-    if hasattr(scheduler, "weight"):
-        w = scheduler.weight(t)
-        while w.dim() < pred.dim():
-            w = w.unsqueeze(-1)
-        mse_per_sample = ((pred - v_target) ** 2).mean(dim=list(range(1, pred.dim())))
-        loss = (w * mse_per_sample).mean()
-    else:
-        loss = F.mse_loss(pred, v_target, reduction="mean")
-
-    return loss
+    return loss, rel_mse, nrmse
 
 
 
@@ -205,7 +197,7 @@ def train_one_epoch(
     optimizer.zero_grad(set_to_none=True)
     
     for batch_idx, batch in enumerate(dataloader):
-        loss = train_step(model, batch, scheduler, patchifier, config, device)
+        loss, rel_mse, nrmse = train_step(model, batch, scheduler, patchifier, config, device)
         
         if config.gradient_accumulation_steps > 1:
             loss = loss / config.gradient_accumulation_steps
@@ -222,6 +214,8 @@ def train_one_epoch(
             actual_loss = loss_value * config.gradient_accumulation_steps 
             wandb.log({
                 "train/loss": actual_loss,
+                "train/rel_mse": rel_mse.item(),
+                "train/nrmse": nrmse.item(),
                 "train/epoch": epoch,
                 "train/lr": optimizer.param_groups[0]["lr"],
             }, step=global_step)
@@ -233,18 +227,24 @@ def train_one_epoch(
     return global_step, epoch_loss
 
 
-def train_loop_deepspeed(config: TrainConfig, dataloader):
+def train_loop_deepspeed(config: TrainConfig, dataloader, val_dataloader=None):
     """
     Training loop with model sharding across GPUs.
     """
     
     patchifier = SymmetricPatchifier(patch_size=1)
     
-    model = build_transformer_for_lora_finetune(config)
-    model = apply_lora_to_model(model, config)
+    model = build_transformer(config)
+    model = apply_training_strategy(model, config, getattr(config, "train_mode", "full"))
     
     if config.gradient_checkpointing:
-        model.base_model.model.gradient_checkpointing = True
+        if hasattr(model, "base_model") and hasattr(model.base_model, "model"):
+            model.base_model.model.gradient_checkpointing = True
+        else:
+            try:
+                model.gradient_checkpointing = True
+            except Exception:
+                pass
         print("Gradient checkpointing enabled")
     
     rf_scheduler = RectifiedFlowScheduler(
@@ -271,6 +271,13 @@ def train_loop_deepspeed(config: TrainConfig, dataloader):
     
     device = model_engine.local_rank
     patchifier.to(device)
+
+    # Preload shared components for validation (on CPU initially)
+    # VAE from base checkpoint
+    base_ckpt = hf_hub_download(repo_id="Lightricks/LTX-Video", filename=config.checkpoint_path, repo_type="model")
+    vae = CausalVideoAutoencoder.from_pretrained(base_ckpt).cpu()
+    # Reuse patchifier and scheduler from training (they are lightweight)
+    val_components = {"vae": vae, "patchifier": patchifier, "scheduler": rf_scheduler}
     
     if config.output_dir:
         os.makedirs(config.output_dir, exist_ok=True)
@@ -338,53 +345,79 @@ def train_loop_deepspeed(config: TrainConfig, dataloader):
                 )
         
         epoch_loss = sum(epoch_losses) / len(epoch_losses) if epoch_losses else 0.0
+        # Validation (only rank 0)
+        if model_engine.local_rank == 0 and val_dataloader is not None:
+            val_loss = validate_epoch(
+                model_engine, val_dataloader, rf_scheduler, patchifier, config, device
+            )
+            wandb.log({"val/loss": val_loss, "val/epoch": epoch}, step=global_step)
+            print(f"Validation epoch {epoch+1}, loss: {val_loss:.6f}")
+
+            # Video recon validation: move VAE to GPU just-in-time, then back to CPU
+            val_components["vae"] = val_components["vae"].to(device)
+            # Use current transformer's base model for denoising
+            current_transformer = getattr(getattr(model_engine, "base_model", model_engine), "model", model_engine)
+            validate_video(
+                transformer=current_transformer,
+                components=val_components,
+                val_dataloader=val_dataloader,
+                output_dir=os.path.join(config.output_dir, "val_videos"),
+                num_samples=min(2, len(val_dataloader.dataset)),
+                frame_rate=22,
+            )
+            val_components["vae"] = val_components["vae"].cpu()
         
         if model_engine.local_rank == 0:
             print(f"Epoch {epoch+1} finished. Average loss: {epoch_loss:.6f}")
             wandb.log({"train/epoch_loss": epoch_loss}, step=global_step)
         
         if model_engine.local_rank == 0 and (epoch + 1) % config.save_every_n_epochs == 0:
-            ckpt_path = os.path.join(config.output_dir, f"ckpt_epoch_{epoch+1}.pt")
-            merged_model = model.merge_and_unload()
-            torch.save({
-                "model": merged_model.state_dict(),
-                "epoch": epoch,
-                "global_step": global_step,
-                "config": config,
-            }, ckpt_path)
-            logger.info(f"Saved checkpoint: {ckpt_path}")
-        
-        # Save best model (only rank 0)
-        if model_engine.local_rank == 0 and epoch_loss < best_loss:
-            best_loss = epoch_loss
-            best_path = os.path.join(config.output_dir, "ckpt_best.pt")
-            merged_model = model.merge_and_unload()
-            torch.save({
-                "model": merged_model.state_dict(),
-                "epoch": epoch,
-                "global_step": global_step,
-                "config": config,
-            }, best_path)
-            logger.info(f"Saved best checkpoint (loss: {best_loss:.6f}): {best_path}")
+            epoch_st = os.path.join(config.output_dir, f"model_epoch_{epoch+1}.safetensors")
+            save_training_checkpoint(
+                model=model,
+                target_path=epoch_st,
+                train_mode=getattr(config, "train_mode", "full"),
+                metadata={
+                    "epoch": str(epoch+1),
+                    "global_step": str(global_step),
+                    "source": "deepspeed_epoch",
+                    "scheduler": {
+                        "num_train_timesteps": config.rf_num_train_timesteps,
+                        "shifting": config.rf_shifting,
+                        "base_resolution": config.rf_base_resolution,
+                        "target_shift_terminal": config.rf_target_shift_terminal,
+                        "sampler": config.rf_sampler,
+                        "shift": config.rf_shift,
+                    }
+                },
+                is_best= (epoch_loss < best_loss)
+            )
+
     
     if model_engine.local_rank == 0:
         wandb.finish()
-        logger.info("Training complete!")
+        print("Training complete!")
 
 
-def train_loop(config: TrainConfig, dataloader):
+def train_loop(config: TrainConfig, dataloader, val_dataloader=None):
     if config.use_deepspeed:
-        return train_loop_deepspeed(config, dataloader)
+        return train_loop_deepspeed(config, dataloader, val_dataloader)
     
     device = get_device()
     patchifier = SymmetricPatchifier(patch_size=1)
     
-    model = build_transformer_for_lora_finetune(config)
+    model = build_transformer(config)
     model.to(device)
-    model = apply_lora_to_model(model, config)
+    model = apply_training_strategy(model, config, getattr(config, "train_mode", "full"))
     
     if config.gradient_checkpointing:
-        model.base_model.model.gradient_checkpointing = True
+        if hasattr(model, "base_model") and hasattr(model.base_model, "model"):
+            model.base_model.model.gradient_checkpointing = True
+        else:
+            try:
+                model.gradient_checkpointing = True
+            except Exception:
+                pass
         print("Gradient checkpointing enabled")
 
     rf_scheduler = RectifiedFlowScheduler(
@@ -396,6 +429,13 @@ def train_loop(config: TrainConfig, dataloader):
         shift=config.rf_shift,
     )
     optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=config.learning_rate)
+    # Debug: parameter counts (transformer vs trainable)
+    total_params_transformer = sum(p.numel() for n, p in model.named_parameters() if "caption_projection" not in n)
+    total_params_all = sum(p.numel() for _n, p in model.named_parameters())
+    trainable_params = sum(p.numel() for _n, p in model.named_parameters() if p.requires_grad)
+    trainable_params_transformer = sum(p.numel() for n, p in model.named_parameters() if p.requires_grad and ("caption_projection" not in n))
+    print(f"[params] total_all={total_params_all} total_transformer={total_params_transformer} trainable_all={trainable_params} trainable_transformer={trainable_params_transformer}")
+
 
     if config.output_dir:
         os.makedirs(config.output_dir, exist_ok=True)
@@ -427,43 +467,60 @@ def train_loop(config: TrainConfig, dataloader):
     global_step = 0
     best_loss = float('inf')
 
+    # Preload shared components for validation (on CPU initially)
+    base_ckpt = hf_hub_download(repo_id="Lightricks/LTX-Video", filename=config.checkpoint_path, repo_type="model")
+    vae = CausalVideoAutoencoder.from_pretrained(base_ckpt).cpu()
+    val_components = {"vae": vae, "patchifier": patchifier, "scheduler": rf_scheduler}
+
     for epoch in range(config.num_epochs or 0):        
         global_step, epoch_loss = train_one_epoch(
             model, dataloader, optimizer, rf_scheduler, patchifier, device, config, epoch, global_step
         )
-        
+        # Validation
+        if val_dataloader is not None:
+            val_loss = validate_epoch(
+                model, val_dataloader, rf_scheduler, patchifier, config, device
+            )
+            wandb.log({"val/loss": val_loss, "val/epoch": epoch}, step=global_step)
+            print(f"Validation epoch {epoch+1}, loss: {val_loss:.6f}")
+
+            # Video recon validation
+            val_components["vae"] = val_components["vae"].to(device)
+            current_transformer = getattr(getattr(model, "base_model", model), "model", model)
+            validate_video(
+                transformer=current_transformer,
+                components=val_components,
+                val_dataloader=val_dataloader,
+                output_dir=os.path.join(config.output_dir, "val_videos"),
+                num_samples=1,
+                frame_rate=22,
+            )
+            val_components["vae"] = val_components["vae"].cpu()
         print(f"Epoch {epoch+1} finished. Average loss: {epoch_loss:.6f}")
         wandb.log({"train/epoch_loss": epoch_loss}, step=global_step)
 
         
         if (epoch + 1) % config.save_every_n_epochs == 0:
-            ckpt_path = os.path.join(config.output_dir, f"ckpt_epoch_{epoch+1}.pt")
-            
-            model.save_pretrained(os.path.join(config.output_dir, f"lora_epoch_{epoch+1}"))
-            torch.save({
-                "lora_state_dict": get_peft_model_state_dict(model),
-                "caption_projection": model.base_model.model.caption_projection.state_dict(),
-                "optimizer": optimizer.state_dict(),
-                "epoch": epoch,
-                "global_step": global_step,
-                "config": config,
-            }, ckpt_path)
-            print(f"Checkpoint saved: {ckpt_path}")
-            
-        if epoch_loss < best_loss:
-            best_loss = epoch_loss
-            best_path = os.path.join(config.output_dir, "ckpt_best.pt")
-            
-            model.save_pretrained(os.path.join(config.output_dir, "lora_best"))
-            torch.save({
-                "lora_state_dict": get_peft_model_state_dict(model),
-                "caption_projection": model.base_model.model.caption_projection.state_dict(),
-                "optimizer": optimizer.state_dict(),
-                "epoch": epoch,
-                "global_step": global_step,
-                "config": config,
-            }, best_path)
-            print(f"Best checkpoint saved: {best_path}")
+            epoch_st = os.path.join(config.output_dir, f"model_epoch_{epoch+1}.safetensors")
+            save_training_checkpoint(
+                model=model,
+                target_path=epoch_st,
+                train_mode=getattr(config, "train_mode", "full"),
+                metadata={
+                    "epoch": str(epoch+1),
+                    "global_step": str(global_step),
+                    "source": "single_gpu_epoch",
+                    "scheduler": {
+                        "num_train_timesteps": config.rf_num_train_timesteps,
+                        "shifting": config.rf_shifting,
+                        "base_resolution": config.rf_base_resolution,
+                        "target_shift_terminal": config.rf_target_shift_terminal,
+                        "sampler": config.rf_sampler,
+                        "shift": config.rf_shift,
+                    }
+                },
+                is_best = epoch_loss < best_loss
+            )
           
     wandb.finish()
     print("Training complete!")
@@ -479,11 +536,14 @@ def get_device():
 
 def main():
     
-    parser = argparse.ArgumentParser(description="LTX-Video transformer LoRA training entry point")
+    parser = argparse.ArgumentParser(description="LTX-Video transformer training entry point")
     parser.add_argument("--config", type=str, required=True, help="Path to YAML config with train block (e.g., configs/train-avatars.yaml)")
+    parser.add_argument("--train_mode", type=str, choices=["full", "lora_audio"], default="full", help="Training mode: full finetune or LoRA+AudioProjection only")
     args = parser.parse_args()
 
     config = load_train_config_from_yaml(args.config)
+    # attach runtime training mode
+    setattr(config, "train_mode", args.train_mode)
     
     dataset = LatentPairDataset(config.audio_latents_dir, config.encoder_latents_dir)
     dataloader = DataLoader(
@@ -493,8 +553,18 @@ def main():
         num_workers=0,
         collate_fn=collate_latent_pairs, 
     )
-    
-    train_loop(config, dataloader)
+    val_dataset = ValidationDataset(config.val_audio_latents_dir, config.val_encoder_latents_dir, config.videos)
+    val_dataloader = DataLoader(
+        val_dataset,
+        batch_size=config.batch_size or 1,
+        shuffle=False,
+        num_workers=0,
+        collate_fn=collate_latent_pairs,
+    )
+
+
+    train_loop(config, dataloader, val_dataloader)
+    # train_loop(config, dataloader)
 
 
 if __name__ == "__main__":

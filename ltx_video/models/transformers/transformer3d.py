@@ -39,14 +39,22 @@ class AudioProjection(nn.Module):
 
     def __init__(self, in_features, hidden_size):
         super().__init__()
-        self.linear_1 = nn.Linear(in_features=in_features, out_features=hidden_size, bias=True)
+        self.linear_1 = nn.Linear(in_features=in_features, out_features=512, bias=True)
         self.act_1 = nn.GELU(approximate="tanh")
-        self.linear_2 = nn.Linear(in_features=hidden_size, out_features=hidden_size, bias=True)
+        self.linear_3 = nn.Linear(in_features=512, out_features=1024, bias=True)
+        self.act_3 = nn.GELU(approximate="tanh")
+        self.linear_4 = nn.Linear(in_features=1024, out_features=hidden_size, bias=True)
+        self.scale = nn.Parameter(torch.ones(1) * 0.1)
+
+
 
     def forward(self, caption):
         hidden_states = self.linear_1(caption)
         hidden_states = self.act_1(hidden_states)
-        hidden_states = self.linear_2(hidden_states)
+        hidden_states = self.linear_3(hidden_states)
+        hidden_states = self.act_3(hidden_states)
+        hidden_states = self.linear_4(hidden_states)
+        hidden_states = self.scale * hidden_states
         return hidden_states
 
 
@@ -363,9 +371,11 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
                 state_dict[new_key] = state_dict.pop(key)
 
             # Construct the module on a meta device for memory-efficient weight loading.
+            # Remove caption_projection weights to allow custom projection dims
+            state_dict = {k: v for k, v in state_dict.items() if "caption_projection" not in k}
             with torch.device("meta"):
                 transformer = cls.from_config(config)
-            transformer.load_state_dict(state_dict, assign=True, strict=True)
+            transformer.load_state_dict(state_dict, assign=True, strict=False)
         elif pretrained_model_path.is_file() and str(pretrained_model_path).endswith(
             ".safetensors"
         ):
@@ -379,7 +389,9 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
             transformer_config = configs["transformer"]
             with torch.device("meta"):
                 transformer = Transformer3DModel.from_config(transformer_config)
-            transformer.load_state_dict(comfy_single_file_state_dict, assign=True)
+            # Remove caption_projection weights to allow custom projection dims
+            comfy_single_file_state_dict = {k: v for k, v in comfy_single_file_state_dict.items() if "caption_projection" not in k}
+            transformer.load_state_dict(comfy_single_file_state_dict, assign=True, strict=False)
         return transformer
 
     def forward(

@@ -24,7 +24,7 @@ def collate_latent_pairs(batch):
     encoder_latents = [item["latents"] for item in batch]
     
     batch_size = len(batch)
-    audio_dim = audio_latents_list[0].shape[-1]  # D dimension (typically 64)
+    audio_dim = audio_latents_list[0].shape[-1]  # D dimension
     
     # Initialize padded tensors
     audio_latents_padded = torch.zeros(batch_size, MAX_AUDIO_LENGTH, audio_dim, dtype=torch.float32)
@@ -40,11 +40,17 @@ def collate_latent_pairs(batch):
     # Stack encoder latents
     encoder_latents_stacked = torch.stack(encoder_latents, dim=0)
     
-    return {
+    out = {
         "audio_latents": audio_latents_padded,      # [B, 256, D]
         "audio_mask": audio_mask,                    # [B, 256]
         "latents": encoder_latents_stacked,          # [B, C, F, H, W]
     }
+    if isinstance(batch[0], dict):
+        if "target_video_path" in batch[0]:
+            out["target_video_path"] = [item["target_video_path"] for item in batch]
+        if "stem" in batch[0]:
+            out["stem"] = [item["stem"] for item in batch]
+    return out
 
 
 class LatentPairDataset(Dataset):
@@ -54,7 +60,7 @@ class LatentPairDataset(Dataset):
         # Collect encoder latent files (*.pt) and find matching audio files
         encoder_files = sorted(self.encoder_dir.glob("*.pt"))
         self.pairs = []
-        for ef in encoder_files:
+        for ef in encoder_files[:5]:
             stem = ef.stem
             audio_file = self.audio_dir / f"{stem}_ff.npy"
             if audio_file.exists():
@@ -76,5 +82,42 @@ class LatentPairDataset(Dataset):
         return {
             "audio_latents": audio_lat,  # [T, D]
             "latents": encoder_lat,      # [C, F, H, W]
+        }
+
+
+class ValidationDataset(Dataset):
+    def __init__(self, audio_latents_dir: str, encoder_latents_dir: str, target_video_dir: str, video_ext: str = ".mp4"):
+        self.audio_dir = Path(audio_latents_dir)
+        self.encoder_dir = Path(encoder_latents_dir)
+        self.video_dir = Path(target_video_dir)
+        self.video_ext = video_ext
+
+        encoder_files = sorted(self.encoder_dir.glob("*.pt"))
+        self.pairs = []
+        for ef in encoder_files:
+            stem = ef.stem
+            audio_file = self.audio_dir / f"{stem}_ff.npy"
+            video_file = self.video_dir / f"{stem}{self.video_ext}"
+            if audio_file.exists() and video_file.exists():
+                self.pairs.append((str(audio_file), str(ef), str(video_file)))
+
+    def __len__(self):
+        return len(self.pairs)
+
+    def __getitem__(self, idx):
+        audio_path, encoder_path, video_path = self.pairs[idx]
+        audio_lat = np.load(audio_path)
+        if audio_lat.ndim == 3 and audio_lat.shape[0] == 1:
+            audio_lat = audio_lat[0]
+        audio_lat = torch.tensor(audio_lat, dtype=torch.float32)
+
+        encoder_data = torch.load(encoder_path, map_location="cpu")
+        encoder_lat = encoder_data["latents"].squeeze()
+
+        return {
+            "audio_latents": audio_lat,      # [T, D]
+            "latents": encoder_lat,          # [C, F, H, W]
+            "target_video_path": video_path, # str
+            "stem": Path(encoder_path).stem,
         }
 

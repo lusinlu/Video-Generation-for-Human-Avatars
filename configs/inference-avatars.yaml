@@ -1,0 +1,21 @@
+pipeline_type: base
+checkpoint_path: "ltxv-2b-0.9.6-dev-04-25.safetensors"
+guidance_scale: 1
+stg_scale: 0
+rescaling_scale: 1
+skip_block_list: [19]
+num_inference_steps: 40
+stg_mode: "attention_values" # options: "attention_values", "attention_skip", "residual", "transformer_block"
+decode_timestep: 0.05
+decode_noise_scale: 0.025
+precision: "bfloat16"
+sampler: "from_checkpoint" # options: "uniform", "linear-quadratic", "from_checkpoint"
+stochastic_sampling: false
+lora_rank: 8
+lora_alpha: 8
+output_path: "./result"
+seed: 171198
+height: 704
+width: 1216
+frame_rate: 22
+offload_to_cpu: True

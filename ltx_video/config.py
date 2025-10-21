@@ -8,6 +8,10 @@ class TrainConfig:
     checkpoint_path: str
     audio_latents_dir: Optional[str] = None
     encoder_latents_dir: Optional[str] = None
+    # Optional validation sources
+    val_audio_latents_dir: Optional[str] = None
+    val_encoder_latents_dir: Optional[str] = None
+    videos: Optional[str] = None
     
     output_dir: Optional[str] = None
 
@@ -81,6 +85,9 @@ def load_train_config_from_yaml(yaml_path: str) -> TrainConfig:
         precision=precision,
         audio_latents_dir=train_block.get("audio_latents_dir"),
         encoder_latents_dir=train_block.get("encoder_latents_dir"),
+        val_audio_latents_dir=train_block.get("val_audio_latents_dir"),
+        val_encoder_latents_dir=train_block.get("val_encoder_latents_dir"),
+        videos=train_block.get("videos"),
         output_dir=train_block.get("output_dir"),
         batch_size=int(train_block["batch_size"]) if "batch_size" in train_block else None,
         num_epochs=int(train_block["num_epochs"]) if "num_epochs" in train_block else None,

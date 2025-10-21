@@ -7,16 +7,20 @@ sampler: "uniform"  # options: "uniform", "linear-quadratic", "from_checkpoint"
 train:
   audio_latents_dir: "../../avatars_data/audio_latents"  # FaceFormer audio latents (*_ff.npy)
   encoder_latents_dir: "../../avatars_data/encoder_latents"  # VAE encoder latents (*.pt)
-  
+
+  val_audio_latents_dir: "../../avatars_data/val_audio_latents"  # FaceFormer audio latents (*_ff.npy)
+  val_encoder_latents_dir: "../../avatars_data/val_encoder_latents"  # VAE encoder latents (*.pt)
+  videos: "../../avatars_data/video_clips"  # VAE encoder latents (*.pt)
+
   output_dir: "../outputs/avatars_checkpoints"
   
-  batch_size: 8
-  num_epochs: 10
+  batch_size: 5
+  num_epochs: 50
   learning_rate: 1e-4
   
   # Memory optimization
   gradient_checkpointing: true  
-  gradient_accumulation_steps: 2 
+  gradient_accumulation_steps: 1
   
   # Model sharding (for multi-GPU training)
   use_deepspeed: false  
@@ -25,12 +29,12 @@ train:
   # Logging & Experiment Tracking
   wandb_project: "ltx-video-avatars"
   wandb_run_name: null 
-  log_every_n_steps: 10  
-  save_every_n_epochs: 1 
+  log_every_n_steps: 20  
+  save_every_n_epochs: 10
   
   # LoRA parameters
-  lora_rank: 8
-  lora_alpha: 8
+  lora_rank: 32
+  lora_alpha: 32
   
   # Audio encoder settings
   audio_embed_dim: 64  # FaceFormer output dimension
@@ -44,8 +48,8 @@ train:
   rf_shift: null 
   
   # SD3-style log-normal timestep sampling
-  rf_log_normal_mu: null  # e.g., 0.0 for log-normal sampling
-  rf_log_normal_sigma: null  # e.g., 1.0 for log-normal sampling
-  rf_quantile_min: 0.005  # clamp percentile min
-  rf_quantile_max: 0.999  # clamp percentile max
+  rf_log_normal_mu: -0.5 
+  rf_log_normal_sigma: 1  
+  rf_quantile_min: 0.005  
+  rf_quantile_max: 0.999 
 

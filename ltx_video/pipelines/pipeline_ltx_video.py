@@ -383,7 +383,7 @@ class LTXVideoPipeline(DiffusionPipeline):
                 eps = 0.99
                 latents = eps * noise + (1 - eps) * latents
             else:
-                latents = timestep * noise + (1 - timestep) * latents
+            latents = timestep * noise + (1 - timestep) * latents
 
         return latents
 
@@ -923,7 +923,7 @@ class LTXVideoPipeline(DiffusionPipeline):
             stochastic_sampling=stochastic_sampling,
         )[0]
 
-        return denoised_latents
+            return denoised_latents
 
     # removed: prepare_conditioning (not used in minimal avatar flow)
 
