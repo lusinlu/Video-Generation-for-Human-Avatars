@@ -1,6 +1,7 @@
 import os
 import argparse
 import json
+from lpips import LPIPS
 from typing import Union
 import torch
 import torch.nn.functional as F
@@ -17,6 +18,8 @@ from ltx_video.schedulers.rf import RectifiedFlowScheduler
 from ltx_video.dataset import LatentPairDataset, ValidationDataset, collate_latent_pairs
 from ltx_video.validation import validate_epoch, validate_video
 from ltx_video.models.autoencoders.causal_video_autoencoder import CausalVideoAutoencoder
+from ltx_video.models.autoencoders.vae_encode import vae_decode as _vae_decode, normalize_latents as _norm
+
 try:
     import deepspeed
     from deepspeed.utils import logger as ds_logger
@@ -126,7 +129,10 @@ def train_step(
     patchifier: SymmetricPatchifier,
     config: TrainConfig,
     device: torch.device = None,
-) -> torch.Tensor:
+    lpips_metric: any = None,
+    decoder_vae: any = None,
+
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict]:
     model_dtype = next(model.parameters()).dtype
     
     latents = batch["latents"].to(device=device, dtype=model_dtype)
@@ -171,13 +177,81 @@ def train_step(
         encoder_attention_mask=audio_mask, 
         return_dict=True,
     )
-    mean_target = v_target.mean() 
     std_target = v_target.std()
-    loss = F.mse_loss(out.sample, v_target, reduction="mean")
+    transformer_mse = F.mse_loss(out.sample, v_target, reduction="mean")
+    loss = float(getattr(config, "transformer_loss_weight", 1.0)) * transformer_mse
+
+    # train decoder to perform the last denoising step in pixel space
+    if getattr(config, "decoder_train", False) and (decoder_vae is not None):
+
+        t_eps = 1e-6
+        if t.ndim == 1:
+            t_b = t.view(-1, 1, 1)
+        else:
+            t_b = t
+        dt_small = torch.clamp(t_b, min=t_eps) * 0.05
+        tokens_denoised = noisy_tokens - dt_small * out.sample
+
+        t_max = float(getattr(config, "decoder_t_max", 0.1))
+        t_d = torch.rand(B, device=device, dtype=t.dtype) * t_max
+
+        # Unpatchify tokens to latent grids
+        p_h, p_w = patchifier.patch_size[1], patchifier.patch_size[2]
+        out_ch = tokens_denoised.shape[-1] // (p_h * p_w)
+        latents_denoised = patchifier.unpatchify(
+            latents=tokens_denoised,
+            output_height=latents.shape[-2],
+            output_width=latents.shape[-1],
+            out_channels=out_ch,
+        )
+
+        denorm = _norm(latents_denoised, decoder_vae, vae_per_channel_normalize=True).to(dtype=decoder_vae.dtype)
+        dec_pixels = _vae_decode(denorm, decoder_vae, is_video=True, vae_per_channel_normalize=True, timestep=t_d)
+
+        Bv, Cpix, Fpix, Hpix, Wpix = dec_pixels.shape
+        target_tensor = batch["target_video"].to(dec_pixels.device, dtype=dec_pixels.dtype)  # [C,F,H,W] per item
+        # Ensure batch and shape alignment
+        if target_tensor.ndim == 4:
+            target_tensor = target_tensor.unsqueeze(0)
+        target_tensor = target_tensor[:, :, :Fpix]
+        target_tensor = torch.nn.functional.interpolate(
+            target_tensor.flatten(0,1), size=(Hpix, Wpix), mode="bilinear", align_corners=False
+        ).view(Bv, Cpix, -1, Hpix, Wpix)
+
+        l1 = F.l1_loss(dec_pixels, target_tensor, reduction="mean")
+        lpips_val = torch.tensor(0.0, device=dec_pixels.device, dtype=dec_pixels.dtype)
+        if lpips_metric is not None:
+            Bv, Cpix, Fpix, Hpix, Wpix = dec_pixels.shape
+            acc = 0.0
+            with torch.no_grad():
+                for i in range(Fpix):
+                    a = dec_pixels[:, :, i].clamp(0, 1).detach()
+                    b = target_tensor[:, :, i].clamp(0, 1).detach()
+                    acc = acc + lpips_metric(a, b)
+            lpips_val = acc / max(1, Fpix)
+            if torch.is_tensor(lpips_val) and lpips_val.ndim > 0:
+                lpips_val = lpips_val.mean()
+            lpips_val = torch.as_tensor(float(lpips_val), device=dec_pixels.device, dtype=dec_pixels.dtype)
+
+        w_l1 = float(getattr(config, "decoder_loss_l1_weight", 0.1))
+        w_lpips = float(getattr(config, "decoder_loss_lpips_weight", 0.0))
+        dec_loss = w_l1 * l1 + w_lpips * lpips_val
+
+        loss = loss + dec_loss
+        loss_dict = {
+            "transformer_mse": transformer_mse.detach().item(),
+            "decoder_l1": l1.detach().item(),
+            "decoder_lpips": float(lpips_val.detach().item()) if torch.is_tensor(lpips_val) else float(lpips_val),
+            "decoder_loss": dec_loss.detach().item(),
+        }
+        
+
+    else:
+        loss_dict = {"transformer_mse": transformer_mse.detach().item()}
     rel_mse = loss / (std_target**2 + 1e-12)
     nrmse = torch.sqrt(loss) / (std_target + 1e-12)
 
-    return loss, rel_mse, nrmse
+    return loss, rel_mse, nrmse, loss_dict
 
 
 
@@ -191,13 +265,16 @@ def train_one_epoch(
     config: TrainConfig,
     epoch: int,
     global_step: int,
+    decoder_vae:  None,
 ):
     model.train()
     epoch_losses = []
+
+    lpips_metric = LPIPS(net='vgg').to(device).eval()
     optimizer.zero_grad(set_to_none=True)
     
     for batch_idx, batch in enumerate(dataloader):
-        loss, rel_mse, nrmse = train_step(model, batch, scheduler, patchifier, config, device)
+        loss, rel_mse, nrmse, loss_dict = train_step(model, batch, scheduler, patchifier, config, device,lpips_metric, decoder_vae)
         
         if config.gradient_accumulation_steps > 1:
             loss = loss / config.gradient_accumulation_steps
@@ -212,13 +289,16 @@ def train_one_epoch(
             global_step += 1
             
             actual_loss = loss_value * config.gradient_accumulation_steps 
-            wandb.log({
+            log_payload = {
                 "train/loss": actual_loss,
                 "train/rel_mse": rel_mse.item(),
                 "train/nrmse": nrmse.item(),
                 "train/epoch": epoch,
                 "train/lr": optimizer.param_groups[0]["lr"],
-            }, step=global_step)
+            }
+            for k, v in (loss_dict or {}).items():
+                log_payload[f"train/{k}"] = float(v)
+            wandb.log(log_payload, step=global_step)
             
         
         epoch_losses.append(loss_value * config.gradient_accumulation_steps)
@@ -255,10 +335,8 @@ def train_loop_deepspeed(config: TrainConfig, dataloader, val_dataloader=None):
         sampler=config.rf_sampler,
         shift=config.rf_shift,
     )
-    optimizer = torch.optim.AdamW(
-        filter(lambda p: p.requires_grad, model.parameters()),
-        lr=config.learning_rate
-    )
+    opt_params = list(filter(lambda p: p.requires_grad, model.parameters()))
+    optimizer = torch.optim.AdamW(opt_params, lr=config.learning_rate)
     
     with open(config.deepspeed_config, 'r') as f:
         ds_config = json.load(f)
@@ -272,11 +350,9 @@ def train_loop_deepspeed(config: TrainConfig, dataloader, val_dataloader=None):
     device = model_engine.local_rank
     patchifier.to(device)
 
-    # Preload shared components for validation (on CPU initially)
     # VAE from base checkpoint
     base_ckpt = hf_hub_download(repo_id="Lightricks/LTX-Video", filename=config.checkpoint_path, repo_type="model")
     vae = CausalVideoAutoencoder.from_pretrained(base_ckpt).cpu()
-    # Reuse patchifier and scheduler from training (they are lightweight)
     val_components = {"vae": vae, "patchifier": patchifier, "scheduler": rf_scheduler}
     
     if config.output_dir:
@@ -345,7 +421,6 @@ def train_loop_deepspeed(config: TrainConfig, dataloader, val_dataloader=None):
                 )
         
         epoch_loss = sum(epoch_losses) / len(epoch_losses) if epoch_losses else 0.0
-        # Validation (only rank 0)
         if model_engine.local_rank == 0 and val_dataloader is not None:
             val_loss = validate_epoch(
                 model_engine, val_dataloader, rf_scheduler, patchifier, config, device
@@ -353,9 +428,7 @@ def train_loop_deepspeed(config: TrainConfig, dataloader, val_dataloader=None):
             wandb.log({"val/loss": val_loss, "val/epoch": epoch}, step=global_step)
             print(f"Validation epoch {epoch+1}, loss: {val_loss:.6f}")
 
-            # Video recon validation: move VAE to GPU just-in-time, then back to CPU
             val_components["vae"] = val_components["vae"].to(device)
-            # Use current transformer's base model for denoising
             current_transformer = getattr(getattr(model_engine, "base_model", model_engine), "model", model_engine)
             validate_video(
                 transformer=current_transformer,
@@ -388,7 +461,8 @@ def train_loop_deepspeed(config: TrainConfig, dataloader, val_dataloader=None):
                         "target_shift_terminal": config.rf_target_shift_terminal,
                         "sampler": config.rf_sampler,
                         "shift": config.rf_shift,
-                    }
+                    },
+                    "vae": {"timestep_conditioning": True}
                 },
                 is_best= (epoch_loss < best_loss)
             )
@@ -428,8 +502,18 @@ def train_loop(config: TrainConfig, dataloader, val_dataloader=None):
         sampler=config.rf_sampler,
         shift=config.rf_shift,
     )
-    optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=config.learning_rate)
-    # Debug: parameter counts (transformer vs trainable)
+    params = list(filter(lambda p: p.requires_grad, model.parameters()))
+    decoder_vae = None
+    if getattr(config, "decoder_train", False):
+        base_ckpt = hf_hub_download(repo_id="Lightricks/LTX-Video", filename=config.checkpoint_path, repo_type="model")
+        decoder_vae = CausalVideoAutoencoder.from_pretrained(base_ckpt).to(device)
+        if config.precision == "bfloat16":
+            decoder_vae = decoder_vae.to(torch.bfloat16)
+        for p in decoder_vae.parameters():
+            p.requires_grad = True
+        params += list(decoder_vae.parameters())
+    optimizer = torch.optim.AdamW(params, lr=config.learning_rate)
+
     total_params_transformer = sum(p.numel() for n, p in model.named_parameters() if "caption_projection" not in n)
     total_params_all = sum(p.numel() for _n, p in model.named_parameters())
     trainable_params = sum(p.numel() for _n, p in model.named_parameters() if p.requires_grad)
@@ -467,16 +551,16 @@ def train_loop(config: TrainConfig, dataloader, val_dataloader=None):
     global_step = 0
     best_loss = float('inf')
 
-    # Preload shared components for validation (on CPU initially)
+    # Preload shared components for validation
     base_ckpt = hf_hub_download(repo_id="Lightricks/LTX-Video", filename=config.checkpoint_path, repo_type="model")
     vae = CausalVideoAutoencoder.from_pretrained(base_ckpt).cpu()
     val_components = {"vae": vae, "patchifier": patchifier, "scheduler": rf_scheduler}
 
     for epoch in range(config.num_epochs or 0):        
         global_step, epoch_loss = train_one_epoch(
-            model, dataloader, optimizer, rf_scheduler, patchifier, device, config, epoch, global_step
+            model, dataloader, optimizer, rf_scheduler, patchifier, device, config, epoch, global_step, decoder_vae
         )
-        # Validation
+
         if val_dataloader is not None:
             val_loss = validate_epoch(
                 model, val_dataloader, rf_scheduler, patchifier, config, device
@@ -484,7 +568,6 @@ def train_loop(config: TrainConfig, dataloader, val_dataloader=None):
             wandb.log({"val/loss": val_loss, "val/epoch": epoch}, step=global_step)
             print(f"Validation epoch {epoch+1}, loss: {val_loss:.6f}")
 
-            # Video recon validation
             val_components["vae"] = val_components["vae"].to(device)
             current_transformer = getattr(getattr(model, "base_model", model), "model", model)
             validate_video(
@@ -517,7 +600,8 @@ def train_loop(config: TrainConfig, dataloader, val_dataloader=None):
                         "target_shift_terminal": config.rf_target_shift_terminal,
                         "sampler": config.rf_sampler,
                         "shift": config.rf_shift,
-                    }
+                    },
+                    "vae": {"timestep_conditioning": True}
                 },
                 is_best = epoch_loss < best_loss
             )
@@ -542,10 +626,9 @@ def main():
     args = parser.parse_args()
 
     config = load_train_config_from_yaml(args.config)
-    # attach runtime training mode
     setattr(config, "train_mode", args.train_mode)
     
-    dataset = LatentPairDataset(config.audio_latents_dir, config.encoder_latents_dir)
+    dataset = LatentPairDataset(config.audio_latents_dir, config.encoder_latents_dir, config.videos)
     dataloader = DataLoader(
         dataset, 
         batch_size=config.batch_size or 1, 
@@ -564,7 +647,6 @@ def main():
 
 
     train_loop(config, dataloader, val_dataloader)
-    # train_loop(config, dataloader)
 
 
 if __name__ == "__main__":

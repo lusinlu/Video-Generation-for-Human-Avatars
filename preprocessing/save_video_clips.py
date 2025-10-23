@@ -45,13 +45,23 @@ def save_clip_and_meta(
     start_f: int,
     end_f: int,
     fps: float,
+    target_height: int = None,
+    target_width: int = None,
 ):
     os.makedirs(out_dir, exist_ok=True)
+    
+    # Resize frames if target dimensions are specified
+    processed_frames = frames
+    if target_height is not None and target_width is not None:
+        processed_frames = []
+        for frame in frames:
+            resized_frame = frame.resize((target_width, target_height), Image.Resampling.LANCZOS)
+            processed_frames.append(resized_frame)
     
     # Save video clip
     clip_path = os.path.join(out_dir, f"{base_name}_{clip_idx}.mp4")
     writer = imageio.get_writer(clip_path, fps=fps, codec='libx264')
-    for frame in frames:
+    for frame in processed_frames:
         writer.append_data(np.array(frame))
     writer.close()
     
@@ -76,6 +86,8 @@ def main():
     parser.add_argument("--output_dir", type=str, default='../../avatars_data/video_clips')
     parser.add_argument("--clip_length", type=int, default=121)
     parser.add_argument("--stride", type=int, default=121, help="Frames to move between clips")
+    parser.add_argument("--height", type=int, default=352, help="Target height for frame resizing (matches VAE processing)")
+    parser.add_argument("--width", type=int, default=608, help="Target width for frame resizing (matches VAE processing)")
     args = parser.parse_args()
 
     files: List[str] = []
@@ -107,6 +119,8 @@ def main():
                 start_f=s,
                 end_f=e,
                 fps=fps,
+                target_height=args.height,
+                target_width=args.width,
             )
             clip_idx += 1
 

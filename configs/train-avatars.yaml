@@ -5,16 +5,16 @@ sampler: "uniform"  # options: "uniform", "linear-quadratic", "from_checkpoint"
 
 # Training-specific parameters
 train:
-  audio_latents_dir: "../../avatars_data/audio_latents"  # FaceFormer audio latents (*_ff.npy)
-  encoder_latents_dir: "../../avatars_data/encoder_latents"  # VAE encoder latents (*.pt)
+  audio_latents_dir: "../../small_avatars_data/audio_latents"  # FaceFormer audio latents (*_ff.npy)
+  encoder_latents_dir: "../../small_avatars_data/encoder_latents"  # VAE encoder latents (*.pt)
 
-  val_audio_latents_dir: "../../avatars_data/val_audio_latents"  # FaceFormer audio latents (*_ff.npy)
-  val_encoder_latents_dir: "../../avatars_data/val_encoder_latents"  # VAE encoder latents (*.pt)
-  videos: "../../avatars_data/video_clips"  # VAE encoder latents (*.pt)
+  val_audio_latents_dir: "../../small_avatars_data/val_audio_latents"  # FaceFormer audio latents (*_ff.npy)
+  val_encoder_latents_dir: "../../small_avatars_data/val_encoder_latents"  # VAE encoder latents (*.pt)
+  videos: "../../small_avatars_data/video_clips" 
 
-  output_dir: "../outputs/avatars_checkpoints"
+  output_dir: "../avatars_checkpoints"
   
-  batch_size: 5
+  batch_size: 64
   num_epochs: 50
   learning_rate: 1e-4
   
@@ -52,4 +52,11 @@ train:
   rf_log_normal_sigma: 1  
   rf_quantile_min: 0.005  
   rf_quantile_max: 0.999 
+
+  # Train decoder for last denoising step (paper § Abstract, last-step in decoder)
+  decoder_train: true           # set true to enable
+  transformer_loss_weight: 1.0   # weight for transformer velocity MSE
+  decoder_loss_l1_weight: 0.2    # L1 pixel loss
+  decoder_loss_lpips_weight: 0.01 # LPIPS(VGG) loss
+  decoder_t_max: 0.1             # uniform t ~ U(0, t_max) for last-step objective
 

@@ -35,7 +35,17 @@ def save_module_safetensors(module: nn.Module, target_path: str, metadata: dict 
     This does not mutate the module. All tensors are moved to CPU before writing.
     """
     state = {k: v.detach().cpu() for k, v in module.state_dict().items()}
-    save_file(state, target_path, metadata=metadata or {})
+    meta = dict(metadata or {})
+    # If caller didn't provide a 'config', embed a minimal transformer config when available
+    if "config" not in meta:
+        try:
+            cfg = getattr(module, "config", None)
+            if cfg is not None:
+                cfg_dict = {k: v for k, v in getattr(cfg, "__dict__", {}).items() if not k.startswith("_")}
+                meta["config"] = json.dumps({"transformer": cfg_dict})
+        except Exception:
+            pass
+    save_file(state, target_path, metadata=meta)
 
 
 def export_merged_safetensors(peft_model: nn.Module, target_path: str, metadata: dict | None = None) -> None:

@@ -211,6 +211,10 @@ class LTXVideoPipeline(DiffusionPipeline):
         self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor)
 
         self.allowed_inference_steps = allowed_inference_steps
+        print(
+                f"[pipeline] VAE decoder timestep_conditioning={getattr(self.vae.decoder, 'timestep_conditioning', None)}"
+            )
+
 
     # Adapted from diffusers.pipelines.deepfloyd_if.pipeline_if.encode_prompt
     def encode_prompt(
@@ -383,7 +387,7 @@ class LTXVideoPipeline(DiffusionPipeline):
                 eps = 0.99
                 latents = eps * noise + (1 - eps) * latents
             else:
-            latents = timestep * noise + (1 - timestep) * latents
+                latents = timestep * noise + (1 - timestep) * latents
 
         return latents
 
@@ -923,7 +927,7 @@ class LTXVideoPipeline(DiffusionPipeline):
             stochastic_sampling=stochastic_sampling,
         )[0]
 
-            return denoised_latents
+        return denoised_latents
 
     # removed: prepare_conditioning (not used in minimal avatar flow)
 

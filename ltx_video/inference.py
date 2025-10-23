@@ -339,6 +339,11 @@ def infer(config: InferenceConfig):
         transformer_path=config.transformer_path,
     )
 
+    print(
+            f"[inference] VAE decoder timestep_conditioning={getattr(pipeline.vae.decoder, 'timestep_conditioning', None)}"
+        )
+
+
     if pipeline_config.get("pipeline_type", None) == "multi-scale":
         if not spatial_upscaler_model_path:
             raise ValueError(
@@ -374,6 +379,8 @@ def infer(config: InferenceConfig):
         "height", "width", "num_frames"
     ]}
 
+    # Engage decoder last-step denoising by passing a small decode_timestep
+    # (paper suggests decoder performs final step in pixel space)
     images = pipeline(
         **filtered_cfg,
         skip_layer_strategy=skip_layer_strategy,

@@ -53,6 +53,14 @@ class TrainConfig:
     log_every_n_steps: int = 10
     save_every_n_epochs: int = 1
 
+    # Decoder last-step training
+    decoder_train: bool = False
+    # Loss weights
+    transformer_loss_weight: float = 1.0
+    decoder_loss_l1_weight: float = 0.1
+    decoder_loss_lpips_weight: float = 0.0
+    decoder_t_max: float = 0.1
+
 
 def load_train_config_from_yaml(yaml_path: str) -> TrainConfig:
     """
@@ -114,6 +122,11 @@ def load_train_config_from_yaml(yaml_path: str) -> TrainConfig:
         wandb_run_name=train_block.get("wandb_run_name"),
         log_every_n_steps=int(train_block.get("log_every_n_steps", 10)),
         save_every_n_epochs=int(train_block.get("save_every_n_epochs", 1)),
+        decoder_train=bool(train_block.get("decoder_train", False)),
+        transformer_loss_weight=float(train_block.get("transformer_loss_weight", 1.0)),
+        decoder_loss_l1_weight=float(train_block.get("decoder_loss_l1_weight", 0.1)),
+        decoder_loss_lpips_weight=float(train_block.get("decoder_loss_lpips_weight", 0.0)),
+        decoder_t_max=float(train_block.get("decoder_t_max", 0.1)),
     )
 
     return train_config

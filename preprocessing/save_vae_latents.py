@@ -104,8 +104,8 @@ def main():
     parser.add_argument("--ckpt", type=str, default='ltxv-2b-0.9.6-dev-04-25.safetensors', help="Path to LTX-Video checkpoint (safetensors or dir)")
     parser.add_argument("--clip_length", type=int, default=121)
     parser.add_argument("--stride", type=int, default=121, help="Frames to move between clips")
-    parser.add_argument("--height", type=int, default=704)
-    parser.add_argument("--width", type=int, default=1216)
+    parser.add_argument("--height", type=int, default=352)
+    parser.add_argument("--width", type=int, default=608)
     parser.add_argument("--per_channel_normalize", action="store_true", help="Use per-channel VAE normalization")
     args = parser.parse_args()
 
