@@ -3,7 +3,6 @@ import numpy as np
 from pathlib import Path
 from torch.utils.data import Dataset
 import imageio
-import torch.nn.functional as F
 
 
 def collate_latent_pairs(batch):

@@ -4,10 +4,7 @@ from typing import Union
 
 from ltx_video.models.transformers.symmetric_patchifier import SymmetricPatchifier
 from ltx_video.schedulers.rf import RectifiedFlowScheduler
-from ltx_video.models.autoencoders.causal_video_autoencoder import CausalVideoAutoencoder
 from ltx_video.pipelines.pipeline_ltx_video import LTXVideoPipeline
-from safetensors import safe_open
-import json
 import imageio
 import numpy as np
 from pathlib import Path

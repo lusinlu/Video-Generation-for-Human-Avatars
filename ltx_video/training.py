@@ -8,9 +8,8 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 import wandb
 from huggingface_hub import hf_hub_download
-from peft import LoraConfig, get_peft_model, get_peft_model_state_dict
+from peft import LoraConfig, get_peft_model
 from ltx_video.utils.torch_utils import save_training_checkpoint
-import json
 from ltx_video.config import TrainConfig, load_train_config_from_yaml
 from ltx_video.models.transformers.symmetric_patchifier import SymmetricPatchifier
 from ltx_video.models.transformers.transformer3d import Transformer3DModel, AudioProjection

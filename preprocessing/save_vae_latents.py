@@ -2,11 +2,10 @@ import argparse
 import json
 import os
 from pathlib import Path
-from typing import List, Tuple, Optional
+from typing import List, Tuple
 from huggingface_hub import hf_hub_download
 
 import imageio
-import numpy as np
 from PIL import Image
 
 import torch

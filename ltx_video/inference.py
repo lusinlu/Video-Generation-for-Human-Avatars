@@ -14,7 +14,6 @@ from PIL import Image
 import torchvision.transforms.functional as TVF
 from huggingface_hub import hf_hub_download
 from dataclasses import dataclass, field
-from peft import get_peft_model, LoraConfig
 # from torch.serialization import add_safe_globals
 # class TrainConfig:  # type: ignore
 #     pass
@@ -31,7 +30,6 @@ from ltx_video.pipelines.pipeline_ltx_video import (
     LTXMultiScalePipeline,
 )
 from ltx_video.schedulers.rf import RectifiedFlowScheduler
-from ltx_video.utils.skip_layer_strategy import SkipLayerStrategy
 from ltx_video.models.autoencoders.latent_upsampler import LatentUpsampler
 import ltx_video.pipelines.crf_compressor as crf_compressor
 

@@ -1,10 +1,7 @@
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-import copy
-import math
-from transformers import Wav2Vec2Model,Wav2Vec2Config
+from transformers import Wav2Vec2Model
 from transformers.modeling_outputs import BaseModelOutput
 from typing import Optional, Tuple
 _CONFIG_FOR_DOC = "Wav2Vec2Config"

@@ -15,7 +15,7 @@ from diffusers.image_processor import VaeImageProcessor
 from diffusers.models import AutoencoderKL
 from diffusers.pipelines.pipeline_utils import DiffusionPipeline, ImagePipelineOutput
 from diffusers.schedulers import DPMSolverMultistepScheduler
-from diffusers.utils import deprecate, logging
+from diffusers.utils import deprecate
 from diffusers.utils.torch_utils import randn_tensor
 from einops import rearrange
 from TTS.api import TTS

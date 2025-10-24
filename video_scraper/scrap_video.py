@@ -354,7 +354,7 @@ def process_batch_pipeline():
                 
     except Exception as e:
         if "YouTube bot detection triggered" in str(e):
-            print(f"\n SCRIPT STOPPED DUE TO BOT DETECTION")
+            print("\n SCRIPT STOPPED DUE TO BOT DETECTION")
             print(f"Processed {len(all_data)} videos before stopping")
             print(f"Last completed batch: {batch_count}")
         else:

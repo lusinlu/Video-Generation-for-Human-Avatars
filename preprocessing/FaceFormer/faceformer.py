@@ -1,8 +1,5 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import numpy as np
-import copy
 import math
 from .wav2vec import Wav2Vec2Model
 

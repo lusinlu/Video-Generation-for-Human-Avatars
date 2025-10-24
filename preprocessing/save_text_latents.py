@@ -2,14 +2,13 @@ import argparse
 import json
 import os
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 import numpy as np
 import soundfile as sf
 import librosa
 import torch
 from FaceFormer.faceformer import Faceformer
-import soundfile as sf
 from TTS.api import TTS  
 from transformers import Wav2Vec2Processor 
 
