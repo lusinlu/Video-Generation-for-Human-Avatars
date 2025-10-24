@@ -167,3 +167,6 @@ outputs/
 *.png
 !tests/utils/car.png
 .DS_Store
+*.pth
+*.csv
+*.json
