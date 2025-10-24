@@ -94,8 +94,11 @@ def validate_epoch(
         total_count += 1
 
     return total_loss / max(1, total_count)
-    
-def build_val_pipeline(transformer: torch.nn.Module, components: dict, device: torch.device):
+
+
+def build_val_pipeline(
+    transformer: torch.nn.Module, components: dict, device: torch.device
+):
     """Most efficient approach: reuse preloaded VAE/patchifier/scheduler passed in components,
     and rebuild a minimal pipeline each epoch with the current transformer instance.
     components must include: 'vae' (CausalVideoAutoencoder), 'patchifier' (SymmetricPatchifier), 'scheduler' (RectifiedFlowScheduler)
@@ -113,7 +116,6 @@ def build_val_pipeline(transformer: torch.nn.Module, components: dict, device: t
     pl = LTXVideoPipeline(**submodel_dict)
     pl = pl.to(device)
     return pl
-
 
 
 @torch.no_grad()
@@ -135,7 +137,7 @@ def validate_video(
     device = next(transformer.parameters()).device
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-    lpips_metric = LPIPS(net='vgg').to(device)
+    lpips_metric = LPIPS(net="vgg").to(device)
     fid_metric = FrechetInceptionDistance(normalize=True).to(device)
 
     taken = 0
@@ -151,8 +153,6 @@ def validate_video(
             audio_mask = audio_mask[0:1].to(device)
         stem = batch["stem"][0]
         target_path = batch["target_video_path"][0]
-        
-
 
         # Derive dims from latents
         B, C, F, H, W = latents.shape
@@ -160,25 +160,35 @@ def validate_video(
         pl = build_val_pipeline(transformer, components, device)
         height = H * pl.vae_scale_factor
         width = W * pl.vae_scale_factor
-   
-        video_scale_factor = getattr(pl, 'video_scale_factor', 1)
+
+        video_scale_factor = getattr(pl, "video_scale_factor", 1)
         num_frames = (F - 1) * video_scale_factor
-        print(f"[validate_video] dims: H={height} W={width} F={num_frames} (latent_frames={F})")
+        print(
+            f"[validate_video] dims: H={height} W={width} F={num_frames} (latent_frames={F})"
+        )
 
         original_encode_prompt = pl.encode_prompt
-        
+
         def patched_encode_prompt(prompt, **kwargs):
-            return audio_latents.to(pl.device, dtype=pl.transformer.dtype), audio_mask.to(pl.device) if audio_mask is not None else torch.ones((audio_latents.shape[0], audio_latents.shape[1]), dtype=torch.long, device=pl.device)
-        
+            return audio_latents.to(pl.device, dtype=pl.transformer.dtype), (
+                audio_mask.to(pl.device)
+                if audio_mask is not None
+                else torch.ones(
+                    (audio_latents.shape[0], audio_latents.shape[1]),
+                    dtype=torch.long,
+                    device=pl.device,
+                )
+            )
+
         pl.encode_prompt = patched_encode_prompt
-        
+
         try:
             result = pl(
                 height=height,
                 width=width,
                 num_frames=num_frames,
                 frame_rate=frame_rate,
-                prompt="dummy",  
+                prompt="dummy",
                 num_inference_steps=40,
                 latents=latents.to(pl.device, dtype=pl.transformer.dtype),
                 media_items=None,
@@ -195,7 +205,9 @@ def validate_video(
             # Restore original method
             pl.encode_prompt = original_encode_prompt
         recon = result.images  # [B, C, F, H, W]
-        recon = recon[0].permute(1, 2, 3, 0).cpu().float().numpy()  # F,H,W,C uint8 below
+        recon = (
+            recon[0].permute(1, 2, 3, 0).cpu().float().numpy()
+        )  # F,H,W,C uint8 below
         recon = (recon * 255).astype(np.uint8)
 
         # Save recon
@@ -226,21 +238,40 @@ def validate_video(
         # LPIPS: compute per-frame and average
         lpips_vals = []
         for i in range(min(tgt.shape[0], recon.shape[0])):
-            a = torch.from_numpy(recon[i]).permute(2, 0, 1).unsqueeze(0).to(device).float() / 255.0
-            b = torch.from_numpy(tgt[i]).permute(2, 0, 1).unsqueeze(0).to(device).float() / 255.0
-            lpips_val = float(lpips_metric(a*2-1, b*2-1).item())
+            a = (
+                torch.from_numpy(recon[i])
+                .permute(2, 0, 1)
+                .unsqueeze(0)
+                .to(device)
+                .float()
+                / 255.0
+            )
+            b = (
+                torch.from_numpy(tgt[i])
+                .permute(2, 0, 1)
+                .unsqueeze(0)
+                .to(device)
+                .float()
+                / 255.0
+            )
+            lpips_val = float(lpips_metric(a * 2 - 1, b * 2 - 1).item())
             lpips_vals.append(lpips_val)
         avg_lpips = sum(lpips_vals) / max(1, len(lpips_vals))
 
         # FID: add all frames to metric
         # Convert to N,C,H,W in [0,1]
-        recon_tensor = torch.from_numpy(recon).permute(0, 3, 1, 2).to(device).float() / 255.0
-        tgt_tensor = torch.from_numpy(tgt).permute(0, 3, 1, 2).to(device).float() / 255.0
+        recon_tensor = (
+            torch.from_numpy(recon).permute(0, 3, 1, 2).to(device).float() / 255.0
+        )
+        tgt_tensor = (
+            torch.from_numpy(tgt).permute(0, 3, 1, 2).to(device).float() / 255.0
+        )
         fid_metric.update(recon_tensor, real=False)
         fid_metric.update(tgt_tensor, real=True)
 
         fid_val = float(fid_metric.compute().item())
 
-        print(f"[val video] {stem}: lpips={avg_lpips:.4f}, fid={fid_val:.4f}, saved={out_path}")
+        print(
+            f"[val video] {stem}: lpips={avg_lpips:.4f}, fid={fid_val:.4f}, saved={out_path}"
+        )
         taken += 1
-

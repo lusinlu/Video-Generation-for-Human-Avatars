@@ -14,6 +14,7 @@ from PIL import Image
 import torchvision.transforms.functional as TVF
 from huggingface_hub import hf_hub_download
 from dataclasses import dataclass, field
+
 # from torch.serialization import add_safe_globals
 # class TrainConfig:  # type: ignore
 #     pass
@@ -177,6 +178,7 @@ def seed_everething(seed: int):
     if torch.backends.mps.is_available():
         torch.mps.manual_seed(seed)
 
+
 def create_ltx_video_pipeline(
     ckpt_path: str,
     precision: str,
@@ -194,7 +196,7 @@ def create_ltx_video_pipeline(
 
     vae = CausalVideoAutoencoder.from_pretrained(ckpt_path)
 
-    merged_sd = st_load_file(transformer_path, device='cpu')
+    merged_sd = st_load_file(transformer_path, device="cpu")
     # Read transformer config from metadata if present
     with safe_open(transformer_path, framework="pt") as f:
         meta = f.metadata() or {}
@@ -318,9 +320,7 @@ def infer(config: InferenceConfig):
     width_padded = ((width - 1) // 32 + 1) * 32
     num_frames_padded = ((decided_num_frames - 2) // 8 + 1) * 8 + 1
 
-    padding = calculate_padding(
-        height, width, height_padded, width_padded
-    )
+    padding = calculate_padding(height, width, height_padded, width_padded)
 
     print(f"Padded dimensions: {height_padded}x{width_padded}x{num_frames_padded}")
 
@@ -338,9 +338,8 @@ def infer(config: InferenceConfig):
     )
 
     print(
-            f"[inference] VAE decoder timestep_conditioning={getattr(pipeline.vae.decoder, 'timestep_conditioning', None)}"
-        )
-
+        f"[inference] VAE decoder timestep_conditioning={getattr(pipeline.vae.decoder, 'timestep_conditioning', None)}"
+    )
 
     if pipeline_config.get("pipeline_type", None) == "multi-scale":
         if not spatial_upscaler_model_path:
@@ -362,7 +361,6 @@ def infer(config: InferenceConfig):
             padding=padding,
         )
 
-
     skip_layer_strategy = None
 
     # Prepare input for the pipeline
@@ -373,9 +371,11 @@ def infer(config: InferenceConfig):
     generator = torch.Generator(device=device).manual_seed(seed)
 
     # Remove sizing/runtime keys from YAML to avoid duplicate kwargs
-    filtered_cfg = {k: v for k, v in pipeline_config.items() if k not in [
-        "height", "width", "num_frames"
-    ]}
+    filtered_cfg = {
+        k: v
+        for k, v in pipeline_config.items()
+        if k not in ["height", "width", "num_frames"]
+    }
 
     # Engage decoder last-step denoising by passing a small decode_timestep
     # (paper suggests decoder performs final step in pixel space)
@@ -404,7 +404,7 @@ def infer(config: InferenceConfig):
         pad_bottom = images.shape[3]
     if pad_right == 0:
         pad_right = images.shape[4]
-    images = images[:, :, : decided_num_frames, pad_top:pad_bottom, pad_left:pad_right]
+    images = images[:, :, :decided_num_frames, pad_top:pad_bottom, pad_left:pad_right]
 
     for i in range(images.shape[0]):
         # Gathering from B, C, F, H, W to C, F, H, W and then permuting to F, H, W, C
@@ -460,11 +460,29 @@ def load_media_file(
 
 def cli_main():
     parser = argparse.ArgumentParser(description="LTX-Video avatar inference")
-    parser.add_argument("--pipeline_config", type=str, required=True, help="Path to inference yaml (e.g., configs/inference-avatars.yaml)")
-    parser.add_argument("--input_media_path", type=str, required=True, help="Path to input image/video")
-    parser.add_argument("--prompt", type=str, required=True, help="Prompt text (will be converted to audio latents)")
-    parser.add_argument("--output_path", type=str, default='./result', help="Output directory")
-    parser.add_argument("--transformer_path", type=str, default="../outputs/avatars_checkpoints/model_merged_best.safetensors")
+    parser.add_argument(
+        "--pipeline_config",
+        type=str,
+        required=True,
+        help="Path to inference yaml (e.g., configs/inference-avatars.yaml)",
+    )
+    parser.add_argument(
+        "--input_media_path", type=str, required=True, help="Path to input image/video"
+    )
+    parser.add_argument(
+        "--prompt",
+        type=str,
+        required=True,
+        help="Prompt text (will be converted to audio latents)",
+    )
+    parser.add_argument(
+        "--output_path", type=str, default="./result", help="Output directory"
+    )
+    parser.add_argument(
+        "--transformer_path",
+        type=str,
+        default="../outputs/avatars_checkpoints/model_merged_best.safetensors",
+    )
 
     args = parser.parse_args()
 
@@ -475,7 +493,6 @@ def cli_main():
         pipeline_config=args.pipeline_config,
         input_media_path=args.input_media_path,
         transformer_path=args.transformer_path,
-
     )
 
     infer(cfg)

@@ -49,8 +49,11 @@ def _synthesize_audio(text: str, tts_model: str, out_wav_16k: Path) -> None:
     sf.write(str(out_wav_16k), y16, 16000, subtype="PCM_16")
 
 
-def _faceformer_latents_from_text(text: str, device: str, tts_model: str = "tts_models/en/ljspeech/vits") -> Tuple[torch.Tensor, torch.Tensor]:
+def _faceformer_latents_from_text(
+    text: str, device: str, tts_model: str = "tts_models/en/ljspeech/vits"
+) -> Tuple[torch.Tensor, torch.Tensor]:
     from preprocessing.FaceFormer.faceformer import Faceformer  # local module
+
     tmp_dir = Path("outputs/tmp_audio")
     tmp_dir.mkdir(parents=True, exist_ok=True)
     wav_path = tmp_dir / "tts.wav"
@@ -64,7 +67,9 @@ def _faceformer_latents_from_text(text: str, device: str, tts_model: str = "tts_
     if audio.ndim > 1:
         audio = audio.mean(axis=1)
     if sr != 16000:
-        audio = librosa.resample(np.asarray(audio, dtype=np.float32), orig_sr=sr, target_sr=16000)
+        audio = librosa.resample(
+            np.asarray(audio, dtype=np.float32), orig_sr=sr, target_sr=16000
+        )
     input_values = np.asarray(audio, dtype=np.float32)
     if input_values.ndim == 1:
         input_values = np.reshape(input_values, (1, input_values.shape[0]))
@@ -80,7 +85,6 @@ def _faceformer_latents_from_text(text: str, device: str, tts_model: str = "tts_
     # Aggressive offload: move FaceFormer back to CPU and clear CUDA cache if needed
     ff = ff.cpu()
     return lat_t, attn_mask
-
 
 
 # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.retrieve_timesteps
@@ -152,7 +156,6 @@ def retrieve_timesteps(
     return timesteps, num_inference_steps
 
 
-
 class LTXVideoPipeline(DiffusionPipeline):
     r"""
     Pipeline for text-to-image generation using LTX-Video.
@@ -185,7 +188,6 @@ class LTXVideoPipeline(DiffusionPipeline):
         + r"]{1,}"
     )  # noqa
 
-
     model_cpu_offload_seq = "transformer->vae"
 
     def __init__(
@@ -212,9 +214,8 @@ class LTXVideoPipeline(DiffusionPipeline):
 
         self.allowed_inference_steps = allowed_inference_steps
         print(
-                f"[pipeline] VAE decoder timestep_conditioning={getattr(self.vae.decoder, 'timestep_conditioning', None)}"
-            )
-
+            f"[pipeline] VAE decoder timestep_conditioning={getattr(self.vae.decoder, 'timestep_conditioning', None)}"
+        )
 
     # Adapted from diffusers.pipelines.deepfloyd_if.pipeline_if.encode_prompt
     def encode_prompt(
@@ -231,8 +232,10 @@ class LTXVideoPipeline(DiffusionPipeline):
         """
         if device is None:
             device = self._execution_device
-        assert isinstance(prompt, (str, list)) 
-        prompt_embeds, prompt_attention_mask = _faceformer_latents_from_text(str(prompt), str(device), tts_model)
+        assert isinstance(prompt, (str, list))
+        prompt_embeds, prompt_attention_mask = _faceformer_latents_from_text(
+            str(prompt), str(device), tts_model
+        )
 
         # Match training-time audio latent sequence length by pad/truncate
         # Default to 96 if not provided
@@ -240,18 +243,34 @@ class LTXVideoPipeline(DiffusionPipeline):
         T = int(prompt_embeds.shape[1])
         if T >= max_len:
             prompt_embeds = prompt_embeds[:, :max_len, :]
-            prompt_attention_mask = torch.ones((prompt_embeds.shape[0], max_len), dtype=torch.long, device=prompt_embeds.device)
+            prompt_attention_mask = torch.ones(
+                (prompt_embeds.shape[0], max_len),
+                dtype=torch.long,
+                device=prompt_embeds.device,
+            )
         else:
             pad = max_len - T
-            pad_emb = torch.zeros((prompt_embeds.shape[0], pad, prompt_embeds.shape[2]), dtype=prompt_embeds.dtype, device=prompt_embeds.device)
+            pad_emb = torch.zeros(
+                (prompt_embeds.shape[0], pad, prompt_embeds.shape[2]),
+                dtype=prompt_embeds.dtype,
+                device=prompt_embeds.device,
+            )
             prompt_embeds = torch.cat([prompt_embeds, pad_emb], dim=1)
-            pad_mask = torch.zeros((prompt_attention_mask.shape[0], pad), dtype=torch.long, device=prompt_embeds.device)
+            pad_mask = torch.zeros(
+                (prompt_attention_mask.shape[0], pad),
+                dtype=torch.long,
+                device=prompt_embeds.device,
+            )
             prompt_attention_mask = torch.cat([prompt_attention_mask, pad_mask], dim=1)
 
         # Repeat for num_images_per_prompt
         bs, seq_len, dim = prompt_embeds.shape
-        prompt_embeds = prompt_embeds.repeat(1, num_images_per_prompt, 1).view(bs * num_images_per_prompt, seq_len, dim)
-        prompt_attention_mask = prompt_attention_mask.repeat(1, num_images_per_prompt).view(bs * num_images_per_prompt, -1)
+        prompt_embeds = prompt_embeds.repeat(1, num_images_per_prompt, 1).view(
+            bs * num_images_per_prompt, seq_len, dim
+        )
+        prompt_attention_mask = prompt_attention_mask.repeat(
+            1, num_images_per_prompt
+        ).view(bs * num_images_per_prompt, -1)
         return (prompt_embeds, prompt_attention_mask)
 
     # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.StableDiffusionPipeline.prepare_extra_step_kwargs
@@ -276,16 +295,14 @@ class LTXVideoPipeline(DiffusionPipeline):
             extra_step_kwargs["generator"] = generator
         return extra_step_kwargs
 
-    def check_inputs( self, prompt, height, width):
+    def check_inputs(self, prompt, height, width):
         if height % 8 != 0 or width % 8 != 0:
             raise ValueError(
                 f"`height` and `width` have to be divisible by 8 but are {height} and {width}."
             )
 
         if prompt is None:
-            raise ValueError(
-                f"Cannot forward without `prompt`: {prompt}"
-            )
+            raise ValueError(f"Cannot forward without `prompt`: {prompt}")
 
     def _text_preprocessing(self, text):
         if not isinstance(text, (tuple, list)):
@@ -296,8 +313,6 @@ class LTXVideoPipeline(DiffusionPipeline):
             return text
 
         return [process(t) for t in text]
-
-    
 
     # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.StableDiffusionPipeline.prepare_latents
     def prepare_latents(
@@ -552,7 +567,7 @@ class LTXVideoPipeline(DiffusionPipeline):
                 The maximum number of tokens to use for the text encoder.
             stochastic_sampling (`bool`, *optional*, defaults to `False`):
                 If set to `True`, the sampling is stochastic. If set to `False`, the sampling is deterministic.
-           
+
             tone_map_compression_ratio: compression ratio for tone mapping, defaults to 0.0.
                         If set to 0.0, no tone mapping is applied. If set to 1.0 - full compression is applied.
         Examples:
@@ -567,11 +582,7 @@ class LTXVideoPipeline(DiffusionPipeline):
             deprecate("mask_feature", "1.0.0", deprecation_message, standard_warn=False)
 
         is_video = kwargs.get("is_video", False)
-        self.check_inputs(
-            prompt,
-            height,
-            width
-        )
+        self.check_inputs(prompt, height, width)
 
         # 2. Default height and width to transformer
         if prompt is not None and isinstance(prompt, str):
@@ -602,10 +613,7 @@ class LTXVideoPipeline(DiffusionPipeline):
         if isinstance(self.scheduler, TimestepShifter):
             retrieve_timesteps_kwargs["samples_shape"] = latent_shape
 
-        assert (
-            skip_initial_inference_steps == 0
-            or latents is not None
-        ), (
+        assert skip_initial_inference_steps == 0 or latents is not None, (
             f"skip_initial_inference_steps ({skip_initial_inference_steps}) is used for image-to-image/video-to-video - "
             "media_item or latents should be provided."
         )
@@ -673,14 +681,13 @@ class LTXVideoPipeline(DiffusionPipeline):
         # Prompt enhancement disabled in minimal avatar flow
         # 3. Encode input prompt (FaceFormer latents)
         prompt_embeds, prompt_attention_mask = self.encode_prompt(
-                prompt,
+            prompt,
             num_images_per_prompt=num_images_per_prompt,
             device=device,
             audio_max_steps=256,
         )
 
         self.transformer = self.transformer.to(self._execution_device)
-
 
         prompt_embeds_batch = prompt_embeds
         prompt_attention_mask_batch = prompt_attention_mask
@@ -716,7 +723,6 @@ class LTXVideoPipeline(DiffusionPipeline):
             len(timesteps) - num_inference_steps * self.scheduler.order, 0
         )
 
-
         # Befor compiling this code please be aware:
         # This code might generate different input shapes if some timesteps have no STG or CFG.
         # This means that the codes might need to be compiled mutliple times.
@@ -747,8 +753,6 @@ class LTXVideoPipeline(DiffusionPipeline):
                 fractional_coords = batch_pixel_coords.to(torch.float32)
                 fractional_coords[:, 0] = fractional_coords[:, 0] * (1.0 / frame_rate)
 
-                
-
                 latent_model_input = (
                     torch.cat([latents] * num_conds) if num_conds > 1 else latents
                 )
@@ -778,8 +782,6 @@ class LTXVideoPipeline(DiffusionPipeline):
                 current_timestep = current_timestep.expand(
                     latent_model_input.shape[0]
                 ).unsqueeze(-1)
-
-               
 
                 # Choose the appropriate context manager based on `mixed_precision`
                 if mixed_precision:
@@ -851,9 +853,12 @@ class LTXVideoPipeline(DiffusionPipeline):
         # Debug/guard: ensure execution device and latents/vae align before decode
 
         print(
-            "[dbg] exec_device=", self._execution_device,
-            "vae_device=", self.vae.device,
-            "latents_device=", latents.device,
+            "[dbg] exec_device=",
+            self._execution_device,
+            "vae_device=",
+            self.vae.device,
+            "latents_device=",
+            latents.device,
         )
 
         if output_type != "latent":
@@ -914,7 +919,7 @@ class LTXVideoPipeline(DiffusionPipeline):
         """
         Perform the denoising step for the required tokens, based on the current timestep and
         conditioning mask:
-  
+
         """
         # Denoise the latents using the scheduler
         denoised_latents = self.scheduler.step(
@@ -929,8 +934,6 @@ class LTXVideoPipeline(DiffusionPipeline):
         return denoised_latents
 
     # removed: prepare_conditioning (not used in minimal avatar flow)
-
-
 
     @staticmethod
     def tone_map_latents(

@@ -45,8 +45,6 @@ class AudioProjection(nn.Module):
         self.linear_4 = nn.Linear(in_features=1024, out_features=hidden_size, bias=True)
         self.scale = nn.Parameter(torch.ones(1) * 0.1)
 
-
-
     def forward(self, caption):
         hidden_states = self.linear_1(caption)
         hidden_states = self.act_1(hidden_states)
@@ -371,7 +369,9 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
 
             # Construct the module on a meta device for memory-efficient weight loading.
             # Remove caption_projection weights to allow custom projection dims
-            state_dict = {k: v for k, v in state_dict.items() if "caption_projection" not in k}
+            state_dict = {
+                k: v for k, v in state_dict.items() if "caption_projection" not in k
+            }
             with torch.device("meta"):
                 transformer = cls.from_config(config)
             transformer.load_state_dict(state_dict, assign=True, strict=False)
@@ -389,8 +389,14 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
             with torch.device("meta"):
                 transformer = Transformer3DModel.from_config(transformer_config)
             # Remove caption_projection weights to allow custom projection dims
-            comfy_single_file_state_dict = {k: v for k, v in comfy_single_file_state_dict.items() if "caption_projection" not in k}
-            transformer.load_state_dict(comfy_single_file_state_dict, assign=True, strict=False)
+            comfy_single_file_state_dict = {
+                k: v
+                for k, v in comfy_single_file_state_dict.items()
+                if "caption_projection" not in k
+            }
+            transformer.load_state_dict(
+                comfy_single_file_state_dict, assign=True, strict=False
+            )
         return transformer
 
     def forward(

@@ -29,7 +29,9 @@ class Identity(nn.Module):
         return x
 
 
-def save_module_safetensors(module: nn.Module, target_path: str, metadata: dict | None = None) -> None:
+def save_module_safetensors(
+    module: nn.Module, target_path: str, metadata: dict | None = None
+) -> None:
     """Save an nn.Module's state_dict as a single safetensors file (CPU tensors).
 
     This does not mutate the module. All tensors are moved to CPU before writing.
@@ -41,14 +43,20 @@ def save_module_safetensors(module: nn.Module, target_path: str, metadata: dict 
         try:
             cfg = getattr(module, "config", None)
             if cfg is not None:
-                cfg_dict = {k: v for k, v in getattr(cfg, "__dict__", {}).items() if not k.startswith("_")}
+                cfg_dict = {
+                    k: v
+                    for k, v in getattr(cfg, "__dict__", {}).items()
+                    if not k.startswith("_")
+                }
                 meta["config"] = json.dumps({"transformer": cfg_dict})
         except Exception:
             pass
     save_file(state, target_path, metadata=meta)
 
 
-def export_merged_safetensors(peft_model: nn.Module, target_path: str, metadata: dict | None = None) -> None:
+def export_merged_safetensors(
+    peft_model: nn.Module, target_path: str, metadata: dict | None = None
+) -> None:
     """Deepcopy a PEFT-wrapped model, merge LoRA into base weights, and save as safetensors.
 
     - Does NOT modify the original model (safe during training).
@@ -56,7 +64,9 @@ def export_merged_safetensors(peft_model: nn.Module, target_path: str, metadata:
     """
     model_copy = copy.deepcopy(peft_model)
     if not hasattr(model_copy, "merge_and_unload"):
-        raise AttributeError("Model does not support merge_and_unload(); cannot export merged weights")
+        raise AttributeError(
+            "Model does not support merge_and_unload(); cannot export merged weights"
+        )
     merged = model_copy.merge_and_unload()
     # Build metadata with embedded config for single-file load
     meta = dict(metadata or {})
@@ -64,7 +74,11 @@ def export_merged_safetensors(peft_model: nn.Module, target_path: str, metadata:
         cfg = getattr(merged, "config", None)
         if cfg is not None:
             # Extract plain dict of non-private fields
-            cfg_dict = {k: v for k, v in getattr(cfg, "__dict__", {}).items() if not k.startswith("_")}
+            cfg_dict = {
+                k: v
+                for k, v in getattr(cfg, "__dict__", {}).items()
+                if not k.startswith("_")
+            }
             # Merge optional scheduler config provided by caller
             scheduler_cfg = meta.pop("scheduler", None)
             config_root = {"transformer": cfg_dict}
@@ -78,15 +92,15 @@ def export_merged_safetensors(peft_model: nn.Module, target_path: str, metadata:
 
 
 def save_training_checkpoint(
-    model: nn.Module, 
-    target_path: str, 
+    model: nn.Module,
+    target_path: str,
     train_mode: str,
     metadata: dict | None = None,
-    is_best: bool = False
+    is_best: bool = False,
 ) -> None:
     """
     Unified model saving function for training checkpoints.
-    
+
     Args:
         model: The model to save
         target_path: Path where to save the model
@@ -101,7 +115,7 @@ def save_training_checkpoint(
         if not filename.startswith("best_"):
             filename = f"best_{filename}"
         target_path = os.path.join(dir_path, filename)
-    
+
     if train_mode == "lora_audio":
         export_merged_safetensors(model, target_path, metadata)
     else:

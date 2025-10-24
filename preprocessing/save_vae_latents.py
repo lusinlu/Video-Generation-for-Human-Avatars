@@ -12,7 +12,9 @@ import torch
 from torch import Tensor
 import torchvision.transforms.functional as TVF
 
-from ltx_video.models.autoencoders.causal_video_autoencoder import CausalVideoAutoencoder
+from ltx_video.models.autoencoders.causal_video_autoencoder import (
+    CausalVideoAutoencoder,
+)
 from ltx_video.models.autoencoders.vae_encode import vae_encode
 
 
@@ -35,7 +37,7 @@ def preprocess_frames(frames: List[Image.Image], height: int, width: int) -> Ten
     for im in frames:
         im2 = im.resize((width, height), Image.BICUBIC)
         t = TVF.to_tensor(im2)  # [0,1]
-        t = (t * 2.0) - 1.0     # [-1,1]
+        t = (t * 2.0) - 1.0  # [-1,1]
         processed.append(t)
     if not processed:
         raise ValueError("No frames to process")
@@ -97,15 +99,33 @@ def load_vae(ckpt_path: str, device: torch.device) -> CausalVideoAutoencoder:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Extract normalized VAE latents from videos with clip metadata.")
-    parser.add_argument("--inputs", type=str, nargs="+", help="Video files or a directory (processed recursively if dir)")
+    parser = argparse.ArgumentParser(
+        description="Extract normalized VAE latents from videos with clip metadata."
+    )
+    parser.add_argument(
+        "--inputs",
+        type=str,
+        nargs="+",
+        help="Video files or a directory (processed recursively if dir)",
+    )
     parser.add_argument("--output_dir", type=str, required=True)
-    parser.add_argument("--ckpt", type=str, default='ltxv-2b-0.9.6-dev-04-25.safetensors', help="Path to LTX-Video checkpoint (safetensors or dir)")
+    parser.add_argument(
+        "--ckpt",
+        type=str,
+        default="ltxv-2b-0.9.6-dev-04-25.safetensors",
+        help="Path to LTX-Video checkpoint (safetensors or dir)",
+    )
     parser.add_argument("--clip_length", type=int, default=121)
-    parser.add_argument("--stride", type=int, default=121, help="Frames to move between clips")
+    parser.add_argument(
+        "--stride", type=int, default=121, help="Frames to move between clips"
+    )
     parser.add_argument("--height", type=int, default=352)
     parser.add_argument("--width", type=int, default=608)
-    parser.add_argument("--per_channel_normalize", action="store_true", help="Use per-channel VAE normalization")
+    parser.add_argument(
+        "--per_channel_normalize",
+        action="store_true",
+        help="Use per-channel VAE normalization",
+    )
     args = parser.parse_args()
 
     resolved_ckpt = hf_hub_download(
@@ -114,7 +134,11 @@ def main():
         repo_type="model",
     )
 
-    device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
+    device = torch.device(
+        "cuda"
+        if torch.cuda.is_available()
+        else ("mps" if torch.backends.mps.is_available() else "cpu")
+    )
     vae = load_vae(resolved_ckpt, device=device)
 
     files: List[str] = []
@@ -136,12 +160,17 @@ def main():
             continue
 
         clip_idx = 0
-        for (s, e) in clips:
+        for s, e in clips:
             sub = frames[s:e]
             x = preprocess_frames(sub, args.height, args.width)
             x = x.to(device=vae.device, dtype=vae.dtype)
             with torch.no_grad():
-                lat = vae_encode(x, vae, split_size=1, vae_per_channel_normalize=args.per_channel_normalize)
+                lat = vae_encode(
+                    x,
+                    vae,
+                    split_size=1,
+                    vae_per_channel_normalize=args.per_channel_normalize,
+                )
             save_latents_and_meta(
                 latents=lat,
                 out_dir=args.output_dir,
@@ -157,5 +186,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-

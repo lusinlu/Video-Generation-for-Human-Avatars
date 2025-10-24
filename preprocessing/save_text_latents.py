@@ -9,8 +9,8 @@ import soundfile as sf
 import librosa
 import torch
 from FaceFormer.faceformer import Faceformer
-from TTS.api import TTS  
-from transformers import Wav2Vec2Processor 
+from TTS.api import TTS
+from transformers import Wav2Vec2Processor
 
 
 def _basename_no_ext(p: str) -> str:
@@ -45,11 +45,13 @@ def load_transcripts(transcript_json: str) -> Dict[str, List[Dict]]:
             items = []
             for w in words:
                 try:
-                    items.append({
-                        "word": str(w.get("word", "")).strip(),
-                        "start": float(w.get("start", 0.0)),
-                        "end": float(w.get("end", 0.0)),
-                    })
+                    items.append(
+                        {
+                            "word": str(w.get("word", "")).strip(),
+                            "start": float(w.get("start", 0.0)),
+                            "end": float(w.get("end", 0.0)),
+                        }
+                    )
                 except Exception:
                     continue
             return items
@@ -72,7 +74,12 @@ def load_transcripts(transcript_json: str) -> Dict[str, List[Dict]]:
             norm[base] = sorted(lst, key=lambda d: d.get("start", 0.0))
     elif isinstance(raw, list):
         for item in raw:
-            vid_path = item.get("video") or item.get("file") or item.get("path") or item.get("video_path")
+            vid_path = (
+                item.get("video")
+                or item.get("file")
+                or item.get("path")
+                or item.get("video_path")
+            )
             if "transcript" in item and isinstance(item["transcript"], list):
                 base = _basename_no_ext(str(vid_path)) if vid_path else None
                 if not base:
@@ -84,7 +91,9 @@ def load_transcripts(transcript_json: str) -> Dict[str, List[Dict]]:
                     w = _get_words(seg)
                     if s is None or e is None:
                         continue
-                    norm.setdefault(base, []).append({"start": float(s), "end": float(e), "text": t, "words": w})
+                    norm.setdefault(base, []).append(
+                        {"start": float(s), "end": float(e), "text": t, "words": w}
+                    )
             elif "segments" in item and isinstance(item["segments"], list):
                 base = _basename_no_ext(str(vid_path)) if vid_path else None
                 if not base:
@@ -96,7 +105,9 @@ def load_transcripts(transcript_json: str) -> Dict[str, List[Dict]]:
                     w = _get_words(seg)
                     if s is None or e is None:
                         continue
-                    norm.setdefault(base, []).append({"start": float(s), "end": float(e), "text": t, "words": w})
+                    norm.setdefault(base, []).append(
+                        {"start": float(s), "end": float(e), "text": t, "words": w}
+                    )
             else:
                 base = _basename_no_ext(str(vid_path)) if vid_path else None
                 if not base:
@@ -106,7 +117,9 @@ def load_transcripts(transcript_json: str) -> Dict[str, List[Dict]]:
                 t = _get_text(item)
                 if s is None or e is None:
                     continue
-                norm.setdefault(base, []).append({"start": float(s), "end": float(e), "text": t})
+                norm.setdefault(base, []).append(
+                    {"start": float(s), "end": float(e), "text": t}
+                )
         for k in list(norm.keys()):
             norm[k] = sorted(norm[k], key=lambda d: d.get("start", 0.0))
     else:
@@ -124,7 +137,9 @@ def load_clip_metas(latents_dir: str) -> List[Tuple[str, Dict]]:
     return metas
 
 
-def collect_text_for_window(trans_map: Dict[str, List[Dict]], video_base: str, t0: float, t1: float) -> str:
+def collect_text_for_window(
+    trans_map: Dict[str, List[Dict]], video_base: str, t0: float, t1: float
+) -> str:
     segments = trans_map.get(video_base)
     if segments is None:
         segments = trans_map.get(video_base.lower(), [])
@@ -168,7 +183,6 @@ def synthesize_audio(text: str, model_name: str, out_wav_16k: str) -> None:
     sf.write(out_wav_16k, y16, 16000, subtype="PCM_16")
 
 
-
 def extract_faceformer_latents(model: Faceformer, wav_path: str) -> np.ndarray:
     """
     Convert 16kHz mono wav to FaceFormer latent features via a provided API.
@@ -177,7 +191,9 @@ def extract_faceformer_latents(model: Faceformer, wav_path: str) -> np.ndarray:
     if audio.ndim > 1:
         audio = audio.mean(axis=1)
     if sr != 16000:
-        audio = librosa.resample(np.asarray(audio, dtype=np.float32), orig_sr=sr, target_sr=16000)
+        audio = librosa.resample(
+            np.asarray(audio, dtype=np.float32), orig_sr=sr, target_sr=16000
+        )
     processor = Wav2Vec2Processor.from_pretrained("facebook/wav2vec2-base-960h")
     input_values = np.squeeze(processor(audio, sampling_rate=16000).input_values)
     input_values = np.reshape(input_values, (-1, input_values.shape[0]))  # (1, T)
@@ -191,11 +207,30 @@ def extract_faceformer_latents(model: Faceformer, wav_path: str) -> np.ndarray:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Align clip texts → TTS audio → FaceFormer latents")
-    parser.add_argument("--latents_dir", type=str, required=True, help="Directory with clip metadata JSONs from save_vae_latents.py")
-    parser.add_argument("--transcripts", type=str, required=True, help="Transcript JSON with per-video segments")
-    parser.add_argument("--audio_out", type=str, required=True, help="Directory to save generated 16kHz wavs")
-    parser.add_argument("--ff_out", type=str, required=True, help="Directory to save FaceFormer latents")
+    parser = argparse.ArgumentParser(
+        description="Align clip texts → TTS audio → FaceFormer latents"
+    )
+    parser.add_argument(
+        "--latents_dir",
+        type=str,
+        required=True,
+        help="Directory with clip metadata JSONs from save_vae_latents.py",
+    )
+    parser.add_argument(
+        "--transcripts",
+        type=str,
+        required=True,
+        help="Transcript JSON with per-video segments",
+    )
+    parser.add_argument(
+        "--audio_out",
+        type=str,
+        required=True,
+        help="Directory to save generated 16kHz wavs",
+    )
+    parser.add_argument(
+        "--ff_out", type=str, required=True, help="Directory to save FaceFormer latents"
+    )
     parser.add_argument("--tts_model", type=str, default="tts_models/en/ljspeech/vits")
     parser.add_argument("--device", type=str, default="cuda")
 
@@ -206,7 +241,7 @@ def main():
 
     trans_map = load_transcripts(args.transcripts)
     metas = load_clip_metas(args.latents_dir)
-    
+
     # Load FaceFormer
     model = Faceformer(device=args.device)
     ckpt_path = Path("FaceFormer") / "vocaset.pth"
@@ -214,10 +249,18 @@ def main():
     model.load_state_dict(sd, strict=False)
     model = model.to(args.device).eval()
     for stem, meta in metas:
-        video_base = str(meta["video"])  
+        video_base = str(meta["video"])
         stem_base = _strip_index_suffix(stem)
-        t0 = float(meta["start_time_sec"]) if "start_time_sec" in meta else float(meta["start_frame"]) / float(meta["fps"])
-        t1 = float(meta["end_time_sec"]) if "end_time_sec" in meta else float(meta["end_frame_exclusive"]) / float(meta["fps"])
+        t0 = (
+            float(meta["start_time_sec"])
+            if "start_time_sec" in meta
+            else float(meta["start_frame"]) / float(meta["fps"])
+        )
+        t1 = (
+            float(meta["end_time_sec"])
+            if "end_time_sec" in meta
+            else float(meta["end_frame_exclusive"]) / float(meta["fps"])
+        )
         text = collect_text_for_window(trans_map, video_base, t0, t1)
         if not text and stem_base != video_base:
             text = collect_text_for_window(trans_map, stem_base, t0, t1)
@@ -234,10 +277,18 @@ def main():
         np.save(out_npy, lat)
         # Save sidecar with text and timing
         with open(os.path.join(args.ff_out, f"{stem}_text.json"), "w") as f:
-            json.dump({"text": text, "start_time_sec": t0, "end_time_sec": t1, "wav": wav_path, "faceformer_latents": out_npy}, f, indent=2)
+            json.dump(
+                {
+                    "text": text,
+                    "start_time_sec": t0,
+                    "end_time_sec": t1,
+                    "wav": wav_path,
+                    "faceformer_latents": out_npy,
+                },
+                f,
+                indent=2,
+            )
 
 
 if __name__ == "__main__":
     main()
-
-
