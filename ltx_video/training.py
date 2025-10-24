@@ -21,7 +21,6 @@ from ltx_video.models.autoencoders.vae_encode import vae_decode as _vae_decode, 
 
 try:
     import deepspeed
-    from deepspeed.utils import logger as ds_logger
 except ImportError:
     raise ImportError(
         "DeepSpeed not installed! Install with: pip install deepspeed\n"
@@ -542,7 +541,6 @@ def train_loop(config: TrainConfig, dataloader, val_dataloader=None):
 
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total_params = sum(p.numel() for p in model.parameters())
-    trainable_param_names = [name for name, p in model.named_parameters() if p.requires_grad]
 
     wandb.run.summary["trainable_params"] = trainable_params
     wandb.run.summary["total_params"] = total_params

@@ -213,7 +213,6 @@ def main():
     sd = torch.load(str(ckpt_path))
     model.load_state_dict(sd, strict=False)
     model = model.to(args.device).eval()
-    printed_shape = False
     for stem, meta in metas:
         video_base = str(meta["video"])  
         stem_base = _strip_index_suffix(stem)

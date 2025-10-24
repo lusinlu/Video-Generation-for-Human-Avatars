@@ -726,7 +726,6 @@ class LTXVideoPipeline(DiffusionPipeline):
             for i, t in enumerate(timesteps):
                 do_classifier_free_guidance = guidance_scale[i] > 1.0
                 do_spatio_temporal_guidance = stg_scale[i] > 0
-                do_rescaling = rescaling_scale[i] != 1.0
 
                 num_conds = 1
                 if do_classifier_free_guidance:

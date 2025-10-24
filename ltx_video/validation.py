@@ -43,7 +43,6 @@ def validate_epoch(
         indices_grid = latent_coords
 
         B = tokens.shape[0]
-        mu, sigma = float(config.rf_log_normal_mu), float(config.rf_log_normal_sigma)
         logn = torch.distributions.LogNormal(
             torch.tensor(config.rf_log_normal_mu, device=device),
             torch.tensor(config.rf_log_normal_sigma, device=device),
