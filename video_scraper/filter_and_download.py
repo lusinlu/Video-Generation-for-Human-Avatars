@@ -1,4 +1,3 @@
-import os
 import json
 import random
 import subprocess
@@ -12,8 +11,11 @@ import cv2
 import mediapipe as mp
 import pandas as pd
 import shutil
+
 FFMPEG_PATH = shutil.which("ffmpeg")
 print(FFMPEG_PATH)
+
+
 def random_sleep(min_s=1, max_s=4):
     t = random.uniform(min_s, max_s)
     print(f"Sleeping {t:.2f}s...")
@@ -32,7 +34,12 @@ def get_random_user_agent():
     return random.choice(USER_AGENTS)
 
 
-def run_yt_dlp(cmd: str, retries: int = 2, sleep_min: int = 2, sleep_max: int = 5, sleep_after_success: bool = True,
+def run_yt_dlp(
+    cmd: str,
+    retries: int = 2,
+    sleep_min: int = 2,
+    sleep_max: int = 5,
+    sleep_after_success: bool = True,
 ) -> bool:
     for attempt in range(retries):
         print(f"Running yt-dlp (attempt {attempt+1}/{retries})...")
@@ -42,10 +49,10 @@ def run_yt_dlp(cmd: str, retries: int = 2, sleep_min: int = 2, sleep_max: int = 
         if "Sign in to confirm" in result.stderr:
             raise Exception("YouTube bot detection triggered - stopping script")
         if "Video unavailable. This video" in result.stderr:
-            print(f"Video unavailable")
+            print("Video unavailable")
             return False
         if " Private video. Sign" in result.stderr:
-            print(f"Private video")
+            print("Private video")
             return False
 
         if result.returncode == 0:
@@ -65,7 +72,9 @@ mp_face = mp.solutions.face_detection.FaceDetection(
 )
 
 
-def is_one_person_from_start(video_path: Path, num_frames: int = 15, fps: int = 2) -> bool:
+def is_one_person_from_start(
+    video_path: Path, num_frames: int = 15, fps: int = 2
+) -> bool:
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         return False
@@ -93,7 +102,13 @@ def is_one_person_from_start(video_path: Path, num_frames: int = 15, fps: int = 
 
 
 def pre_filter_batches(
-    csv_path: str, start_row: int, end_row: int, output_dir: Path, batch_size: int = 10, workers: int = 4,):
+    csv_path: str,
+    start_row: int,
+    end_row: int,
+    output_dir: Path,
+    batch_size: int = 10,
+    workers: int = 4,
+):
     """Yield filtered (ytid, start, end) per batch along with batch range."""
     df = pd.read_csv(csv_path, header=None)
     if end_row == -1 or end_row is None:
@@ -117,9 +132,9 @@ def pre_filter_batches(
                 url = f"https://www.youtube.com/watch?v={ytid}"
                 ua = get_random_user_agent()
                 cmd = (
-                    f'yt-dlp --retries 2 --fragment-retries 2 --socket-timeout 10 '
-                    f'--no-progress --quiet --no-warnings '
-                    f'-f mp4 --merge-output-format mp4 '
+                    f"yt-dlp --retries 2 --fragment-retries 2 --socket-timeout 10 "
+                    f"--no-progress --quiet --no-warnings "
+                    f"-f mp4 --merge-output-format mp4 "
                     f'--ffmpeg-location "{FFMPEG_PATH}" '
                     f'--user-agent "{ua}" '
                     f'--download-sections "*{start}-{start+3}" '
@@ -140,19 +155,21 @@ def pre_filter_batches(
 
             except Exception as e:
                 if "YouTube bot detection triggered" in str(e):
-                    print(f"\n BOT DETECTION ERROR at row {row_number_local} (video {ytid})")
+                    print(
+                        f"\n BOT DETECTION ERROR at row {row_number_local} (video {ytid})"
+                    )
                     print(f"Last processed row: {row_number_local}")
                     raise e
                 print(f"Error during pre-filter for {ytid}: {e}")
                 return None
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=max(1, workers)
+        ) as executor:
             futures = []
             for idx, row in batch_df.iterrows():
                 ytid, start, end = row[0], float(row[1]), float(row[2])
-                futures.append(
-                    executor.submit(process_row, idx, ytid, start, end)
-                )
+                futures.append(executor.submit(process_row, idx, ytid, start, end))
             for fut in concurrent.futures.as_completed(futures):
                 result = fut.result()
                 if result is not None:
@@ -170,6 +187,7 @@ def download_avspeech_subset(
     workers: int = 4,
 ) -> List[Path]:
     """Download and trim videos with bot error handling, in parallel."""
+
     def process_video(ytid: str, start: float, end: float):
         url = f"https://www.youtube.com/watch?v={ytid}"
         tmp_path = output_dir / f"{ytid}.full.mp4"
@@ -182,9 +200,9 @@ def download_avspeech_subset(
             ua = get_random_user_agent()
             if not tmp_path.exists():
                 cmd = (
-                    f'yt-dlp --retries 2 --fragment-retries 2 --socket-timeout 10 '
-                    f'--no-progress --quiet --no-warnings '
-                    f'-f mp4 --merge-output-format mp4 '
+                    f"yt-dlp --retries 2 --fragment-retries 2 --socket-timeout 10 "
+                    f"--no-progress --quiet --no-warnings "
+                    f"-f mp4 --merge-output-format mp4 "
                     f'--ffmpeg-location "{FFMPEG_PATH}" '
                     f'--user-agent "{ua}" '
                     f'-o "{tmp_path}" "{url}"'
@@ -240,8 +258,14 @@ def download_avspeech_subset(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Prefilter AVSpeech and download trimmed clips")
-    parser.add_argument("--csv_path", type=str, default="avspeech_train.csv",)
+    parser = argparse.ArgumentParser(
+        description="Prefilter AVSpeech and download trimmed clips"
+    )
+    parser.add_argument(
+        "--csv_path",
+        type=str,
+        default="avspeech_train.csv",
+    )
     parser.add_argument("--start_row", type=int, default=0)
     parser.add_argument("--end_row", type=int, default=-1)
     parser.add_argument("--output_dir", type=Path, required=True)
@@ -258,7 +282,9 @@ def main():
         try:
             with open(args.manifest, "r") as f:
                 all_records = json.load(f) or []
-            existing_paths = {r.get("video_path") for r in all_records if isinstance(r, dict)}
+            existing_paths = {
+                r.get("video_path") for r in all_records if isinstance(r, dict)
+            }
             print(f"Loaded {len(all_records)} existing entries from manifest")
         except Exception as e:
             print(f"Warning: could not read manifest: {e}")
@@ -273,25 +299,29 @@ def main():
     ):
         if not batch_filtered:
             continue
-        print(f"\nDownloading {len(batch_filtered)} filtered items for rows {b_start}-{b_end}...")
+        print(
+            f"\nDownloading {len(batch_filtered)} filtered items for rows {b_start}-{b_end}..."
+        )
         batch_paths = download_avspeech_subset(batch_filtered, args.output_dir)
         new_records = []
         for p in batch_paths:
             p_str = str(p)
             if p_str in existing_paths:
                 continue
-            new_records.append({"video_path": p_str, "ytid": Path(p).name.split("_")[0]})
+            new_records.append(
+                {"video_path": p_str, "ytid": Path(p).name.split("_")[0]}
+            )
             existing_paths.add(p_str)
         if new_records:
             all_records.extend(new_records)
             with open(args.manifest, "w") as f:
                 json.dump(all_records, f, indent=2)
-            print(f"Appended {len(new_records)} new entries → {args.manifest} (total {len(all_records)})")
+            print(
+                f"Appended {len(new_records)} new entries → {args.manifest} (total {len(all_records)})"
+            )
         else:
             print("No new entries to append for this batch")
 
 
 if __name__ == "__main__":
     main()
-
-

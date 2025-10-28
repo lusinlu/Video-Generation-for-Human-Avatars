@@ -9,7 +9,10 @@ from torch.utils.data import DataLoader
 import wandb
 from huggingface_hub import hf_hub_download
 from peft import LoraConfig, get_peft_model
-from ltx_video.utils.torch_utils import save_training_checkpoint, save_module_safetensors
+from ltx_video.utils.torch_utils import (
+    save_training_checkpoint,
+    save_module_safetensors,
+)
 from ltx_video.config import TrainConfig, load_train_config_from_yaml
 from ltx_video.models.transformers.symmetric_patchifier import SymmetricPatchifier
 from ltx_video.models.transformers.transformer3d import (
@@ -33,7 +36,12 @@ class CombinedTrainModel(torch.nn.Module):
     Wraps the transformer and optional decoder_vae into a single module so DeepSpeed
     manages parameters for both. The forward proxies to the transformer.
     """
-    def __init__(self, transformer: Transformer3DModel, decoder_vae: torch.nn.Module | None = None):
+
+    def __init__(
+        self,
+        transformer: Transformer3DModel,
+        decoder_vae: torch.nn.Module | None = None,
+    ):
         super().__init__()
         self.transformer = transformer
         if decoder_vae is not None:
@@ -43,6 +51,7 @@ class CombinedTrainModel(torch.nn.Module):
 
     def forward(self, *args, **kwargs):
         return self.transformer(*args, **kwargs)
+
 
 try:
     import deepspeed
@@ -379,7 +388,9 @@ def train_loop_deepspeed(config: TrainConfig, dataloader, val_dataloader=None):
     )
 
     if config.gradient_checkpointing:
-        if hasattr(transformer, "base_model") and hasattr(transformer.base_model, "model"):
+        if hasattr(transformer, "base_model") and hasattr(
+            transformer.base_model, "model"
+        ):
             transformer.base_model.model.gradient_checkpointing = True
         else:
             try:
@@ -418,7 +429,9 @@ def train_loop_deepspeed(config: TrainConfig, dataloader, val_dataloader=None):
     with open(config.deepspeed_config, "r") as f:
         ds_config = json.load(f)
 
-    combined_model = CombinedTrainModel(transformer=transformer, decoder_vae=decoder_vae)
+    combined_model = CombinedTrainModel(
+        transformer=transformer, decoder_vae=decoder_vae
+    )
 
     model_engine, optimizer, _, _ = deepspeed.initialize(
         model=combined_model,
@@ -480,19 +493,35 @@ def train_loop_deepspeed(config: TrainConfig, dataloader, val_dataloader=None):
             batch_device = {
                 "latents": batch["latents"].to(device),
                 "audio_latents": batch["audio_latents"].to(device),
-                "audio_mask": (batch.get("audio_mask").to(device) if batch.get("audio_mask") is not None else None),
-                "target_video": (batch.get("target_video").to(device) if batch.get("target_video") is not None else None),
+                "audio_mask": (
+                    batch.get("audio_mask").to(device)
+                    if batch.get("audio_mask") is not None
+                    else None
+                ),
+                "target_video": (
+                    batch.get("target_video").to(device)
+                    if batch.get("target_video") is not None
+                    else None
+                ),
             }
 
             loss, rel_mse, nrmse, loss_dict = train_step(
-            model_engine.module if hasattr(model_engine, "module") else model_engine,
+                (
+                    model_engine.module
+                    if hasattr(model_engine, "module")
+                    else model_engine
+                ),
                 batch_device,
                 rf_scheduler,
                 patchifier,
                 config,
                 device,
-            lpips_metric,
-            (model_engine.module.decoder_vae if hasattr(model_engine, "module") else None),
+                lpips_metric,
+                (
+                    model_engine.module.decoder_vae
+                    if hasattr(model_engine, "module")
+                    else None
+                ),
             )
 
             model_engine.backward(loss)
@@ -579,14 +608,22 @@ def train_loop_deepspeed(config: TrainConfig, dataloader, val_dataloader=None):
             )
 
             # Save decoder weights if training decoder is enabled
-            if getattr(config, "decoder_train", False) and hasattr(current_module, "decoder_vae") and (current_module.decoder_vae is not None):
+            if (
+                getattr(config, "decoder_train", False)
+                and hasattr(current_module, "decoder_vae")
+                and (current_module.decoder_vae is not None)
+            ):
                 dec_path = os.path.join(
                     config.output_dir, f"decoder_epoch_{epoch+1}.safetensors"
                 )
-                save_module_safetensors(current_module.decoder_vae, dec_path, metadata={
-                    "epoch": str(epoch + 1),
-                    "source": "deepspeed_epoch_decoder",
-                })
+                save_module_safetensors(
+                    current_module.decoder_vae,
+                    dec_path,
+                    metadata={
+                        "epoch": str(epoch + 1),
+                        "source": "deepspeed_epoch_decoder",
+                    },
+                )
 
     if model_engine.local_rank == 0:
         wandb.finish()
@@ -760,10 +797,14 @@ def train_loop(config: TrainConfig, dataloader, val_dataloader=None):
                 dec_path = os.path.join(
                     config.output_dir, f"decoder_epoch_{epoch+1}.safetensors"
                 )
-                save_module_safetensors(decoder_vae, dec_path, metadata={
-                    "epoch": str(epoch + 1),
-                    "source": "single_gpu_epoch_decoder",
-                })
+                save_module_safetensors(
+                    decoder_vae,
+                    dec_path,
+                    metadata={
+                        "epoch": str(epoch + 1),
+                        "source": "single_gpu_epoch_decoder",
+                    },
+                )
 
     wandb.finish()
     print("Training complete!")

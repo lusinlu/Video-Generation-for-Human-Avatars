@@ -24,7 +24,8 @@ def transcribe_video(video_path: Path, whisper_model) -> Dict:
         return {}
     waveform, sr = torchaudio.load(audio_path)
     align_model, align_metadata = whisperx.load_align_model(
-        language_code=result.get("language"), device=("cuda" if torch.cuda.is_available() else "cpu")
+        language_code=result.get("language"),
+        device=("cuda" if torch.cuda.is_available() else "cpu"),
     )
     aligned_result = whisperx.align(
         result.get("segments", []),
@@ -68,9 +69,21 @@ def trim_video_to_start(src: Path, dst: Path, start_sec: float) -> bool:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Process downloaded videos: transcribe and align")
-    parser.add_argument("--videos_dir", type=Path, required=True, help="Directory with downloaded videos")
-    parser.add_argument("--transcripts_file", type=Path, default=Path("video_transcripts.json"), help="Path to transcripts JSON file (output)",)
+    parser = argparse.ArgumentParser(
+        description="Process downloaded videos: transcribe and align"
+    )
+    parser.add_argument(
+        "--videos_dir",
+        type=Path,
+        required=True,
+        help="Directory with downloaded videos",
+    )
+    parser.add_argument(
+        "--transcripts_file",
+        type=Path,
+        default=Path("video_transcripts.json"),
+        help="Path to transcripts JSON file (output)",
+    )
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -98,7 +111,9 @@ def main():
             trimmed = vp.with_name(vp.stem + "_trimmed.mp4")
             if trim_video_to_start(vp, trimmed, first_speech):
                 # Re-run transcription on trimmed video to produce aligned JSON for final cut
-                print(f"Re-transcribing trimmed video starting at {first_speech:.2f}s: {trimmed}")
+                print(
+                    f"Re-transcribing trimmed video starting at {first_speech:.2f}s: {trimmed}"
+                )
                 transcript_data = transcribe_video(trimmed, whisper_model)
                 if not transcript_data:
                     # Fall back to original if something failed
@@ -110,10 +125,12 @@ def main():
         else:
             final_video_path = str(vp)
 
-        all_data.append({
-            "video_path": final_video_path,
-            "transcript": transcript_data.get("segments", []),
-        })
+        all_data.append(
+            {
+                "video_path": final_video_path,
+                "transcript": transcript_data.get("segments", []),
+            }
+        )
 
         with open(args.transcripts_file, "w") as f:
             json.dump(all_data, f, indent=2)
@@ -123,5 +140,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
