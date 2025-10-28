@@ -706,7 +706,6 @@ class LTXVideoPipeline(DiffusionPipeline):
         )
         if offload_to_cpu and self.vae is not None:
             self.vae = self.vae.cpu()
-        # No extra conditioning in minimal avatar flow: patchify latents and set defaults
         latents, latent_coords = self.patchifier.patchify(latents=latents)
         pixel_coords = latent_to_pixel_coords(
             latent_coords,
@@ -722,11 +721,6 @@ class LTXVideoPipeline(DiffusionPipeline):
         num_warmup_steps = max(
             len(timesteps) - num_inference_steps * self.scheduler.order, 0
         )
-
-        # Befor compiling this code please be aware:
-        # This code might generate different input shapes if some timesteps have no STG or CFG.
-        # This means that the codes might need to be compiled mutliple times.
-        # To avoid that, use the same STG and CFG values for all timesteps.
 
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):

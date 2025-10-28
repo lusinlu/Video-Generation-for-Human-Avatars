@@ -32,23 +32,34 @@ pip install -e .
 Download videos from the [AVSpeech dataset](https://looking-to-listen.github.io/avspeech/download.html) and extract relevant segments:
 
 ```bash
-# Download and process videos from AVSpeech
-python video_scraper/scrap_video.py \
-    --csv_path video_scraper/avspeech_train.csv \
-    --start_row 0 \
-    --end_row 1000 \
-    --output_dir ./data/raw_videos \
-    --transcripts_file ./data/video_transcripts.json
+python video_scraper/filter_and_download.py \
+  --csv_path video_scraper/avspeech_train.csv \
+  --start_row 0 \
+  --end_row 2000 \
+  --output_dir ./data/raw_videos \
+  --batch_size 10 \
+  --manifest ./data/downloaded_videos.json
+```
+
+This will incrementally download short person-speaking segments and maintain a manifest at `./data/downloaded_videos.json`.
+
+2) Transcribe and align the downloaded clips with WhisperX; optionally trim to first speech onset for tighter clips:
+
+```bash
+python video_scraper/process_downloaded.py \
+  --videos_dir ./data/raw_videos \
+  --transcripts_file ./data/video_transcripts.json
 ```
 
 **Dataset structure:**
 ```
 data/
 ├── raw_videos/
-│   ├── video_001.mp4
-│   ├── video_002.mp4
+│   ├── YTID_12345_56789.mp4
+│   ├── YTID_23456_67890.mp4
 │   └── ...
-├── video_transcripts.json
+├── downloaded_videos.json         # manifest of downloaded items
+├── video_transcripts.json         # aligned transcripts for each clip
 ```
 
 ### Step 2: Extract VAE Latents from Videos
@@ -81,19 +92,20 @@ python preprocessing/save_text_latents.py \
 ```
 data/
 ├── raw_videos/
-│   ├── video_001.mp4
+│   ├── YTID_12345_56789.mp4
 │   └── ...
+├── downloaded_videos.json
 ├── video_transcripts.json
 ├── vae_latents/
-│   ├── video_001_0.pt          # VAE latent tensor
-│   ├── video_001_0.json        # Metadata (fps, frames, etc.)
+│   ├── YTID_12345_56789_0.pt          # VAE latent tensor
+│   ├── YTID_12345_56789_0.json        # Metadata (fps, frames, etc.)
 │   └── ...
 ├── audio_wav/
-│   ├── video_001_0.wav         # Generated TTS audio
+│   ├── YTID_12345_56789_0.wav         # Generated TTS audio
 │   └── ...
 └── audio_latents/
-    ├── video_001_0_ff.npy      # FaceFormer latent embeddings
-    ├── video_001_0_text.json   # Text and timing info
+    ├── YTID_12345_56789_0_ff.npy      # FaceFormer latent embeddings
+    ├── YTID_12345_56789_0_text.json   # Text and timing info
     └── ...
 ```
 

@@ -47,6 +47,14 @@ def collate_latent_pairs(batch):
         "audio_mask": audio_mask,  # [B, 256]
         "latents": encoder_latents_stacked,  # [B, C, F, H, W]
     }
+    # If dataset provides target video tensors, stack them too
+    if "target_video" in batch[0]:
+        target_videos = [item["target_video"] for item in batch]  # [C,F,H,W] each
+        # Align by frames to allow stacking (trim to min frames in batch)
+        min_frames = min(tv.shape[1] for tv in target_videos)
+        target_videos = [tv[:, :min_frames] for tv in target_videos]
+        out["target_video"] = torch.stack(target_videos, dim=0)  # [B,C,F,H,W]
+
     if isinstance(batch[0], dict):
         if "target_video_path" in batch[0]:
             out["target_video_path"] = [item["target_video_path"] for item in batch]
@@ -100,7 +108,6 @@ class LatentPairDataset(Dataset):
         reader.close()
         tgt_np = np.stack(frames, axis=0)  # [F, H, W, C]
         tgt = torch.from_numpy(tgt_np).permute(3, 0, 1, 2).float() / 255.0  # [C,F,H,W]
-
         return {
             "audio_latents": audio_lat,  # [T, D]
             "latents": encoder_lat,  # [C, F, H, W]

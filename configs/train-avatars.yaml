@@ -14,17 +14,17 @@ train:
 
   output_dir: "../avatars_checkpoints"
   
-  batch_size: 64
+  batch_size: 4
   num_epochs: 50
   learning_rate: 1e-4
   
   # Memory optimization
   gradient_checkpointing: true  
-  gradient_accumulation_steps: 1
+  gradient_accumulation_steps: 16
   
   # Model sharding (for multi-GPU training)
-  use_deepspeed: false  
-  deepspeed_config: "configs/ds_config_zero2.json"  # DeepSpeed ZeRO-2 or ZeRO-3
+  use_deepspeed: true  
+  deepspeed_config: "../configs/ds_config_zero3.json"  # DeepSpeed ZeRO-2 or ZeRO-3
   
   # Logging & Experiment Tracking
   wandb_project: "ltx-video-avatars"

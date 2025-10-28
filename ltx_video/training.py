@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader
 import wandb
 from huggingface_hub import hf_hub_download
 from peft import LoraConfig, get_peft_model
-from ltx_video.utils.torch_utils import save_training_checkpoint
+from ltx_video.utils.torch_utils import save_training_checkpoint, save_module_safetensors
 from ltx_video.config import TrainConfig, load_train_config_from_yaml
 from ltx_video.models.transformers.symmetric_patchifier import SymmetricPatchifier
 from ltx_video.models.transformers.transformer3d import (
@@ -26,6 +26,23 @@ from ltx_video.models.autoencoders.vae_encode import (
     vae_decode as _vae_decode,
     normalize_latents as _norm,
 )
+
+
+class CombinedTrainModel(torch.nn.Module):
+    """
+    Wraps the transformer and optional decoder_vae into a single module so DeepSpeed
+    manages parameters for both. The forward proxies to the transformer.
+    """
+    def __init__(self, transformer: Transformer3DModel, decoder_vae: torch.nn.Module | None = None):
+        super().__init__()
+        self.transformer = transformer
+        if decoder_vae is not None:
+            self.decoder_vae = decoder_vae
+        else:
+            self.decoder_vae = None
+
+    def forward(self, *args, **kwargs):
+        return self.transformer(*args, **kwargs)
 
 try:
     import deepspeed
@@ -356,17 +373,17 @@ def train_loop_deepspeed(config: TrainConfig, dataloader, val_dataloader=None):
 
     patchifier = SymmetricPatchifier(patch_size=1)
 
-    model = build_transformer(config)
-    model = apply_training_strategy(
-        model, config, getattr(config, "train_mode", "full")
+    transformer = build_transformer(config)
+    transformer = apply_training_strategy(
+        transformer, config, getattr(config, "train_mode", "full")
     )
 
     if config.gradient_checkpointing:
-        if hasattr(model, "base_model") and hasattr(model.base_model, "model"):
-            model.base_model.model.gradient_checkpointing = True
+        if hasattr(transformer, "base_model") and hasattr(transformer.base_model, "model"):
+            transformer.base_model.model.gradient_checkpointing = True
         else:
             try:
-                model.gradient_checkpointing = True
+                transformer.gradient_checkpointing = True
             except Exception:
                 pass
         print("Gradient checkpointing enabled")
@@ -379,20 +396,42 @@ def train_loop_deepspeed(config: TrainConfig, dataloader, val_dataloader=None):
         sampler=config.rf_sampler,
         shift=config.rf_shift,
     )
-    opt_params = list(filter(lambda p: p.requires_grad, model.parameters()))
+    opt_params = list(filter(lambda p: p.requires_grad, transformer.parameters()))
+
+    # Optional decoder training: include decoder_vae params in optimizer
+    decoder_vae = None
+    if getattr(config, "decoder_train", False):
+        base_ckpt = hf_hub_download(
+            repo_id="Lightricks/LTX-Video",
+            filename=config.checkpoint_path,
+            repo_type="model",
+        )
+        decoder_vae = CausalVideoAutoencoder.from_pretrained(base_ckpt).cpu()
+        if config.precision == "bfloat16":
+            decoder_vae = decoder_vae.to(torch.bfloat16)
+        for p in decoder_vae.parameters():
+            p.requires_grad = True
+        opt_params += list(decoder_vae.parameters())
+
     optimizer = torch.optim.AdamW(opt_params, lr=config.learning_rate)
 
     with open(config.deepspeed_config, "r") as f:
         ds_config = json.load(f)
 
+    combined_model = CombinedTrainModel(transformer=transformer, decoder_vae=decoder_vae)
+
     model_engine, optimizer, _, _ = deepspeed.initialize(
-        model=model,
+        model=combined_model,
         optimizer=optimizer,
         config=ds_config,
     )
 
-    device = model_engine.local_rank
-    patchifier.to(device)
+    # Use the engine's device for tensors
+    device = model_engine.device
+
+    # Move decoder_vae to device after engine is initialized
+    if decoder_vae is not None:
+        decoder_vae = decoder_vae.to(device)
 
     # VAE from base checkpoint
     base_ckpt = hf_hub_download(
@@ -425,12 +464,6 @@ def train_loop_deepspeed(config: TrainConfig, dataloader, val_dataloader=None):
             },
         )
 
-    if model_engine.local_rank == 0:
-        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-        total_params = sum(p.numel() for p in model.parameters())
-        wandb.run.summary["trainable_params"] = trainable_params
-        wandb.run.summary["total_params"] = total_params
-
     global_step = 0
     best_loss = float("inf")
 
@@ -439,21 +472,27 @@ def train_loop_deepspeed(config: TrainConfig, dataloader, val_dataloader=None):
         model_engine.train()
         epoch_losses = []
 
-        for batch_idx, batch in enumerate(dataloader):
-            latents = batch["latents"].to(device)
-            face_embeds = batch["audio_latents"].to(device)
-            audio_mask = batch.get("audio_mask")
-            if audio_mask is not None:
-                audio_mask = audio_mask.to(device)
+        # Build LPIPS metric on the same device
+        lpips_metric = LPIPS(net="vgg").to(device).eval()
 
+        for batch_idx, batch in enumerate(dataloader):
+            # Move batch to device
             batch_device = {
-                "latents": latents,
-                "audio_latents": face_embeds,
-                "audio_mask": audio_mask,
+                "latents": batch["latents"].to(device),
+                "audio_latents": batch["audio_latents"].to(device),
+                "audio_mask": (batch.get("audio_mask").to(device) if batch.get("audio_mask") is not None else None),
+                "target_video": (batch.get("target_video").to(device) if batch.get("target_video") is not None else None),
             }
 
-            loss = train_step(
-                model_engine, batch_device, rf_scheduler, patchifier, config, device
+            loss, rel_mse, nrmse, loss_dict = train_step(
+            model_engine.module if hasattr(model_engine, "module") else model_engine,
+                batch_device,
+                rf_scheduler,
+                patchifier,
+                config,
+                device,
+            lpips_metric,
+            (model_engine.module.decoder_vae if hasattr(model_engine, "module") else None),
             )
 
             model_engine.backward(loss)
@@ -467,14 +506,16 @@ def train_loop_deepspeed(config: TrainConfig, dataloader, val_dataloader=None):
                 model_engine.local_rank == 0
                 and global_step % config.log_every_n_steps == 0
             ):
-                wandb.log(
-                    {
-                        "train/loss": loss_value,
-                        "train/epoch": epoch,
-                        "train/lr": optimizer.param_groups[0]["lr"],
-                    },
-                    step=global_step,
-                )
+                log_payload = {
+                    "train/loss": loss_value,
+                    "train/rel_mse": float(rel_mse.item()),
+                    "train/nrmse": float(nrmse.item()),
+                    "train/epoch": epoch,
+                    "train/lr": optimizer.param_groups[0]["lr"],
+                }
+                for k, v in (loss_dict or {}).items():
+                    log_payload[f"train/{k}"] = float(v)
+                wandb.log(log_payload, step=global_step)
                 print(
                     f"Epoch {epoch}, Step {global_step}, Batch {batch_idx}/{len(dataloader)}, "
                     f"Loss: {loss_value:.6f}"
@@ -489,9 +530,9 @@ def train_loop_deepspeed(config: TrainConfig, dataloader, val_dataloader=None):
             print(f"Validation epoch {epoch+1}, loss: {val_loss:.6f}")
 
             val_components["vae"] = val_components["vae"].to(device)
-            current_transformer = getattr(
-                getattr(model_engine, "base_model", model_engine), "model", model_engine
-            )
+            # Extract inner transformer for validation
+            current_module = getattr(model_engine, "module", model_engine)
+            current_transformer = getattr(current_module, "transformer", current_module)
             validate_video(
                 transformer=current_transformer,
                 components=val_components,
@@ -513,8 +554,11 @@ def train_loop_deepspeed(config: TrainConfig, dataloader, val_dataloader=None):
             epoch_st = os.path.join(
                 config.output_dir, f"model_epoch_{epoch+1}.safetensors"
             )
+            # Unwrap and save transformer and decoder (if present)
+            current_module = getattr(model_engine, "module", model_engine)
+            current_transformer = getattr(current_module, "transformer", current_module)
             save_training_checkpoint(
-                model=model,
+                model=current_transformer,
                 target_path=epoch_st,
                 train_mode=getattr(config, "train_mode", "full"),
                 metadata={
@@ -533,6 +577,16 @@ def train_loop_deepspeed(config: TrainConfig, dataloader, val_dataloader=None):
                 },
                 is_best=(epoch_loss < best_loss),
             )
+
+            # Save decoder weights if training decoder is enabled
+            if getattr(config, "decoder_train", False) and hasattr(current_module, "decoder_vae") and (current_module.decoder_vae is not None):
+                dec_path = os.path.join(
+                    config.output_dir, f"decoder_epoch_{epoch+1}.safetensors"
+                )
+                save_module_safetensors(current_module.decoder_vae, dec_path, metadata={
+                    "epoch": str(epoch + 1),
+                    "source": "deepspeed_epoch_decoder",
+                })
 
     if model_engine.local_rank == 0:
         wandb.finish()
@@ -701,6 +755,16 @@ def train_loop(config: TrainConfig, dataloader, val_dataloader=None):
                 is_best=epoch_loss < best_loss,
             )
 
+            # Save decoder weights if training decoder is enabled
+            if getattr(config, "decoder_train", False) and (decoder_vae is not None):
+                dec_path = os.path.join(
+                    config.output_dir, f"decoder_epoch_{epoch+1}.safetensors"
+                )
+                save_module_safetensors(decoder_vae, dec_path, metadata={
+                    "epoch": str(epoch + 1),
+                    "source": "single_gpu_epoch_decoder",
+                })
+
     wandb.finish()
     print("Training complete!")
 
@@ -718,6 +782,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="LTX-Video transformer training entry point"
     )
+
     parser.add_argument(
         "--config",
         type=str,
@@ -731,7 +796,8 @@ def main():
         default="full",
         help="Training mode: full finetune or LoRA+AudioProjection only",
     )
-    args = parser.parse_args()
+    # Accept and ignore any extra args injected by launchers (DeepSpeed, torchrun, etc.)
+    args, _unknown = parser.parse_known_args()
 
     config = load_train_config_from_yaml(args.config)
     setattr(config, "train_mode", args.train_mode)
