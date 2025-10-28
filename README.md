@@ -9,7 +9,7 @@ LTX-Video based training pipeline for generating half-body talking human avatar 
 This project fine-tunes the [LTX-Video](https://github.com/Lightricks/LTX-Video) model to generate realistic talking avatar videos. Given a single image and text input, the model generates a video of a person speaking with natural facial expressions and head movements.
 
 <div align="center">
-  <img src="assets/res_exp_03_64.gif" alt="Example Result" width="320">
+  <img src="assets/res_exp_03_64.gif" alt="Example Result" width="420">
   <p><i>Example of a generated talking avatar video</i></p>
 </div>
 
