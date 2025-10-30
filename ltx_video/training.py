@@ -439,12 +439,7 @@ def train_loop_deepspeed(config: TrainConfig, dataloader, val_dataloader=None):
         config=ds_config,
     )
 
-    # Use the engine's device for tensors
     device = model_engine.device
-
-    # Move decoder_vae to device after engine is initialized
-    if decoder_vae is not None:
-        decoder_vae = decoder_vae.to(device)
 
     # VAE from base checkpoint
     base_ckpt = hf_hub_download(
