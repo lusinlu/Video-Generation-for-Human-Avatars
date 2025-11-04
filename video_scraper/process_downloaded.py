@@ -23,15 +23,16 @@ def transcribe_video(video_path: Path, whisper_model) -> Dict:
             os.remove(audio_path)
         return {}
     waveform, sr = torchaudio.load(audio_path)
+    align_device = "cuda" if torch.cuda.is_available() else "cpu"
     align_model, align_metadata = whisperx.load_align_model(
         language_code=result.get("language"),
-        device=("cuda" if torch.cuda.is_available() else "cpu"),
+        device=align_device,
     )
     aligned_result = whisperx.align(
         result.get("segments", []),
         audio=waveform,
         model=align_model,
-        device=("cuda" if torch.cuda.is_available() else "cpu"),
+        device=align_device,
         align_model_metadata=align_metadata,
     )
     if os.path.exists(audio_path):
@@ -136,6 +137,12 @@ def main():
             json.dump(all_data, f, indent=2)
 
     print(f"Processed {len(all_data)} videos → {args.transcripts_file}")
+    for pattern in ("*_preview.mp4", "*_preview_trimmed.mp4"):
+        for p in Path(args.videos_dir).glob(pattern):
+            try:
+                p.unlink()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

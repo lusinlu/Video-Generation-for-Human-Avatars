@@ -95,20 +95,20 @@ def main():
     parser.add_argument(
         "--output_dir", type=str, default="../../avatars_data/video_clips"
     )
-    parser.add_argument("--clip_length", type=int, default=121)
+    parser.add_argument("--clip_length", type=int, default=57)
     parser.add_argument(
-        "--stride", type=int, default=121, help="Frames to move between clips"
+        "--stride", type=int, default=57, help="Frames to move between clips"
     )
     parser.add_argument(
         "--height",
         type=int,
-        default=352,
+        default=192,
         help="Target height for frame resizing (matches VAE processing)",
     )
     parser.add_argument(
         "--width",
         type=int,
-        default=608,
+        default=320,
         help="Target width for frame resizing (matches VAE processing)",
     )
     args = parser.parse_args()

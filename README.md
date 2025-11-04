@@ -16,8 +16,8 @@ This project fine-tunes the [LTX-Video](https://github.com/Lightricks/LTX-Video)
 ## Installation
 
 ```bash
-git clone https://github.com/lusinlu/Human-Avatar-Generator.git
-cd Human-Avatar-Generator
+git clone https://github.com/lusinlu/Video-Generation-for-Human-Avatars.git
+cd Video-Generation-for-Human-Avatars
 
 python -m venv env
 source env/bin/activate
