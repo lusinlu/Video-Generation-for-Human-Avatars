@@ -51,6 +51,8 @@ def save_module_safetensors(
                 meta["config"] = json.dumps({"transformer": cfg_dict})
         except Exception:
             pass
+    # Safetensors requires metadata values to be strings; coerce defensively
+    meta = {str(k): (v if isinstance(v, str) else str(v)) for k, v in meta.items()}
     save_file(state, target_path, metadata=meta)
 
 
@@ -87,6 +89,8 @@ def export_merged_safetensors(
             meta["config"] = json.dumps(config_root)
     except Exception:
         pass
+    # Safetensors requires metadata values to be strings; coerce defensively
+    meta = {str(k): (v if isinstance(v, str) else str(v)) for k, v in meta.items()}
     state = {k: v.detach().cpu() for k, v in merged.state_dict().items()}
     save_file(state, target_path, metadata=meta)
 

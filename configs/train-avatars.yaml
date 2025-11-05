@@ -5,12 +5,12 @@ sampler: "uniform"  # options: "uniform", "linear-quadratic", "from_checkpoint"
 
 # Training-specific parameters
 train:
-  audio_latents_dir: "../../small_avatars_data/audio_latents"  # FaceFormer audio latents (*_ff.npy)
-  encoder_latents_dir: "../../small_avatars_data/encoder_latents"  # VAE encoder latents (*.pt)
+  audio_latents_dir: "../../ava_data/audio_latents"  # FaceFormer audio latents (*_ff.npy)
+  encoder_latents_dir: "../../ava_data/encoder_latents"  # VAE encoder latents (*.pt)
 
-  val_audio_latents_dir: "../../small_avatars_data/val_audio_latents"  # FaceFormer audio latents (*_ff.npy)
-  val_encoder_latents_dir: "../../small_avatars_data/val_encoder_latents"  # VAE encoder latents (*.pt)
-  videos: "../../small_avatars_data/video_clips" 
+  val_audio_latents_dir: "../../ava_data/val_audio_latents"  # FaceFormer audio latents (*_ff.npy)
+  val_encoder_latents_dir: "../../ava_data/val_encoder_latents"  # VAE encoder latents (*.pt)
+  videos: "../../ava_data/video_clips" 
 
   output_dir: "../avatars_checkpoints"
   
@@ -23,7 +23,7 @@ train:
   gradient_accumulation_steps: 16
   
   # Model sharding (for multi-GPU training)
-  use_deepspeed: true  
+  use_deepspeed: false  
   deepspeed_config: "../configs/ds_config_zero3.json"  # DeepSpeed ZeRO-2 or ZeRO-3
   
   # Logging & Experiment Tracking
