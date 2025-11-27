@@ -1,6 +1,5 @@
 import os
 import argparse
-from lpips import LPIPS
 from typing import Union
 import torch
 import torch.nn.functional as F
@@ -8,7 +7,6 @@ from torch.utils.data import DataLoader
 import wandb
 from huggingface_hub import hf_hub_download
 from peft import LoraConfig, get_peft_model
-from torchmetrics.image.fid import FrechetInceptionDistance
 from ltx_video.utils.torch_utils import (
     save_training_checkpoint,
 )
@@ -20,9 +18,6 @@ from ltx_video.models.transformers.transformer3d import (
 from ltx_video.schedulers.rf import RectifiedFlowScheduler
 from ltx_video.dataset import LatentPairDataset, ValidationDataset, collate_latent_pairs
 from ltx_video.validation import validate_epoch
-from ltx_video.models.autoencoders.causal_video_autoencoder import (
-    CausalVideoAutoencoder,
-)
 
 
 def build_transformer(config: TrainConfig):
@@ -232,9 +227,9 @@ def train_loop(config: TrainConfig, dataloader, val_dataloader=None):
         model, config, getattr(config, "train_mode", "full")
     )
 
-    if val_dataloader is not None:
-        lpips_metric = LPIPS(net="vgg").to(device).eval()
-        fid_metric = FrechetInceptionDistance(normalize=True).to(device)
+    # if val_dataloader is not None:
+    #     lpips_metric = LPIPS(net="vgg").to(device).eval()
+    #     fid_metric = FrechetInceptionDistance(normalize=True).to(device)
 
     if config.gradient_checkpointing:
         if hasattr(model, "base_model") and hasattr(model.base_model, "model"):
@@ -302,13 +297,13 @@ def train_loop(config: TrainConfig, dataloader, val_dataloader=None):
     best_loss = float("inf")
 
     # Preload shared components for validation
-    base_ckpt = hf_hub_download(
-        repo_id="Lightricks/LTX-Video",
-        filename=config.checkpoint_path,
-        repo_type="model",
-    )
-    vae = CausalVideoAutoencoder.from_pretrained(base_ckpt).cpu()
-    val_components = {"vae": vae, "patchifier": patchifier, "scheduler": rf_scheduler}
+    # base_ckpt = hf_hub_download(
+    #     repo_id="Lightricks/LTX-Video",
+    #     filename=config.checkpoint_path,
+    #     repo_type="model",
+    # )
+    # vae = CausalVideoAutoencoder.from_pretrained(base_ckpt).cpu()
+    # val_components = {"vae": vae, "patchifier": patchifier, "scheduler": rf_scheduler}
 
     for epoch in range(config.num_epochs or 0):
         global_step, epoch_loss = train_one_epoch(
@@ -330,10 +325,10 @@ def train_loop(config: TrainConfig, dataloader, val_dataloader=None):
             wandb.log({"val/loss": val_loss, "val/epoch": epoch}, step=global_step)
             print(f"Validation epoch {epoch+1}, loss: {val_loss:.6f}")
 
-            val_components["vae"] = val_components["vae"].to(device)
-            current_transformer = getattr(
-                getattr(model, "base_model", model), "model", model
-            )
+            # val_components["vae"] = val_components["vae"].to(device)
+            # current_transformer = getattr(
+            #     getattr(model, "base_model", model), "model", model
+            # )
             # validate_video(
             #     transformer=current_transformer,
             #     components=val_components,
@@ -344,7 +339,7 @@ def train_loop(config: TrainConfig, dataloader, val_dataloader=None):
             #     lpips_metric=lpips_metric,
             #     fid_metric=fid_metric,
             # )
-            val_components["vae"] = val_components["vae"].cpu()
+            # val_components["vae"] = val_components["vae"].cpu()
         print(f"Epoch {epoch+1} finished. Average loss: {epoch_loss:.6f}")
         wandb.log({"train/epoch_loss": epoch_loss}, step=global_step)
 
