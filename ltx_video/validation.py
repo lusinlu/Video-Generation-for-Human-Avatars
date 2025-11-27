@@ -9,6 +9,7 @@ import imageio
 import numpy as np
 from pathlib import Path
 
+
 @torch.no_grad()
 def validate_epoch(
     model: torch.nn.Module,
@@ -112,7 +113,6 @@ def validate_video(
     fid_metric,
     num_samples: int = 4,
     frame_rate: int = 22,
-
 ):
     """Sample N items from val_dataloader, run full reconstruction with the provided pipeline (same path as inference),
     save videos, and compute LPIPS + FID vs target videos.

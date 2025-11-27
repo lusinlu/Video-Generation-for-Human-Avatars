@@ -82,7 +82,7 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
         causal_temporal_positioning: bool = False,  # For backward compatibility, will be deprecated
     ):
         super().__init__()
-       
+
         self.use_tpu_flash_attention = (
             use_tpu_flash_attention  # FIXME: push config down to the attention modules
         )

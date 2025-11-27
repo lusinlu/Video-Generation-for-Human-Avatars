@@ -19,7 +19,7 @@ from ltx_video.models.transformers.transformer3d import (
 )
 from ltx_video.schedulers.rf import RectifiedFlowScheduler
 from ltx_video.dataset import LatentPairDataset, ValidationDataset, collate_latent_pairs
-from ltx_video.validation import validate_epoch, validate_video
+from ltx_video.validation import validate_epoch
 from ltx_video.models.autoencoders.causal_video_autoencoder import (
     CausalVideoAutoencoder,
 )
@@ -38,7 +38,9 @@ def build_transformer(config: TrainConfig):
 
     audio_dim = int(config.audio_embed_dim)
     sample_param = next(model.parameters())
-    model.setup_audio_adapter(audio_dim, dtype=sample_param.dtype, device=sample_param.device)
+    model.setup_audio_adapter(
+        audio_dim, dtype=sample_param.dtype, device=sample_param.device
+    )
 
     return model
 
@@ -101,7 +103,7 @@ def train_step(
     scheduler: RectifiedFlowScheduler,
     patchifier: SymmetricPatchifier,
     config: TrainConfig,
-    device: torch.device = None
+    device: torch.device = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict]:
     model_dtype = next(model.parameters()).dtype
 
@@ -109,7 +111,7 @@ def train_step(
     face_embeds = batch["audio_latents"].to(
         device=device, dtype=model_dtype
     )  # [B, 256, D]
-   
+
     audio_mask = batch.get("audio_mask", None)  # [B, 256]
     audio_mask = audio_mask.to(device)
 
@@ -218,6 +220,7 @@ def train_one_epoch(
 def train_loop(config: TrainConfig, dataloader, val_dataloader=None):
     if config.use_deepspeed:
         from ltx_video.training_deepspeed import train_loop_deepspeed
+
         return train_loop_deepspeed(config, dataloader, val_dataloader)
 
     device = get_device()
@@ -253,7 +256,7 @@ def train_loop(config: TrainConfig, dataloader, val_dataloader=None):
     )
     params = list(filter(lambda p: p.requires_grad, model.parameters()))
     optimizer = torch.optim.AdamW(params, lr=config.learning_rate)
-  
+
     total_params_transformer = sum(
         p.numel() for n, p in model.named_parameters() if "caption_projection" not in n
     )
@@ -322,12 +325,7 @@ def train_loop(config: TrainConfig, dataloader, val_dataloader=None):
 
         if val_dataloader is not None:
             val_loss = validate_epoch(
-                model,
-                val_dataloader,
-                rf_scheduler,
-                patchifier,
-                config,
-                device
+                model, val_dataloader, rf_scheduler, patchifier, config, device
             )
             wandb.log({"val/loss": val_loss, "val/epoch": epoch}, step=global_step)
             print(f"Validation epoch {epoch+1}, loss: {val_loss:.6f}")

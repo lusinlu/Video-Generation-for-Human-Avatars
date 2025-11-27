@@ -109,6 +109,7 @@ def train_loop_deepspeed(config: TrainConfig, dataloader, val_dataloader=None):
 
     if model_engine.local_rank == 0:
         import wandb
+
         wandb.init(
             project=config.wandb_project,
             name=config.wandb_run_name,
@@ -181,6 +182,7 @@ def train_loop_deepspeed(config: TrainConfig, dataloader, val_dataloader=None):
                 and global_step % config.log_every_n_steps == 0
             ):
                 import wandb
+
                 log_payload = {
                     "train/loss": loss_value,
                     "train/rel_mse": float(rel_mse.item()),
@@ -202,6 +204,7 @@ def train_loop_deepspeed(config: TrainConfig, dataloader, val_dataloader=None):
                 model_engine, val_dataloader, rf_scheduler, patchifier, config, device
             )
             import wandb
+
             wandb.log({"val/loss": val_loss, "val/epoch": epoch}, step=global_step)
             print(f"Validation epoch {epoch+1}, loss: {val_loss:.6f}")
 
@@ -222,6 +225,7 @@ def train_loop_deepspeed(config: TrainConfig, dataloader, val_dataloader=None):
         if model_engine.local_rank == 0:
             print(f"Epoch {epoch+1} finished. Average loss: {epoch_loss:.6f}")
             import wandb
+
             wandb.log({"train/epoch_loss": epoch_loss}, step=global_step)
 
         if (
@@ -257,6 +261,6 @@ def train_loop_deepspeed(config: TrainConfig, dataloader, val_dataloader=None):
 
     if model_engine.local_rank == 0:
         import wandb
+
         wandb.finish()
         print("Training complete!")
-
