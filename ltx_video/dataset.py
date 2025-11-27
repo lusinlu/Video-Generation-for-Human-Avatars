@@ -82,7 +82,6 @@ class LatentPairDataset(Dataset):
             stem = ef.stem
             audio_file = self.audio_dir / f"{stem}_ff.npy"
             video_file = self.video_dir / f"{stem}{self.video_ext}"
-            # Strict: assume both exist (no try/catch, per request)
             if audio_file.exists() and video_file.exists():
                 self.pairs.append((str(audio_file), str(ef), str(video_file)))
 

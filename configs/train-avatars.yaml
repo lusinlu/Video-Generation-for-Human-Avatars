@@ -1,6 +1,6 @@
 # Training configuration for talking avatars 
 checkpoint_path: "ltxv-2b-0.9.6-dev-04-25.safetensors"
-precision: "bfloat16"
+precision: "bf16"
 sampler: "uniform"  # options: "uniform", "linear-quadratic", "from_checkpoint"
 
 # Training-specific parameters
@@ -14,13 +14,13 @@ train:
 
   output_dir: "../avatars_checkpoints"
   
-  batch_size: 4
-  num_epochs: 50
+  batch_size: 16
+  num_epochs: 500
   learning_rate: 1e-4
   
   # Memory optimization
-  gradient_checkpointing: true  
-  gradient_accumulation_steps: 16
+  gradient_checkpointing: false  
+  gradient_accumulation_steps: 8
   
   # Model sharding (for multi-GPU training)
   use_deepspeed: false  
@@ -52,11 +52,5 @@ train:
   rf_log_normal_sigma: 1  
   rf_quantile_min: 0.005  
   rf_quantile_max: 0.999 
-
-  # Train decoder for last denoising step (paper § Abstract, last-step in decoder)
-  decoder_train: true           # set true to enable
-  transformer_loss_weight: 1.0   # weight for transformer velocity MSE
-  decoder_loss_l1_weight: 0.2    # L1 pixel loss
-  decoder_loss_lpips_weight: 0.01 # LPIPS(VGG) loss
-  decoder_t_max: 0.1             # uniform t ~ U(0, t_max) for last-step objective
+           # uniform t ~ U(0, t_max) for last-step objective
 

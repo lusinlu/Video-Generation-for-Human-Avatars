@@ -9,6 +9,7 @@ from pathlib import Path
 
 import torch
 from diffusers.configuration_utils import ConfigMixin, register_to_config
+from diffusers.models.embeddings import PixArtAlphaTextProjection
 from diffusers.models.modeling_utils import ModelMixin
 from diffusers.models.normalization import AdaLayerNormSingle
 from diffusers.utils import BaseOutput, is_torch_version
@@ -28,31 +29,6 @@ from ltx_video.utils.diffusers_config_mapping import (
 
 
 logger = logging.get_logger(__name__)
-
-
-class AudioProjection(nn.Module):
-    """
-    Projects caption embeddings. Also handles dropout for classifier-free guidance.
-
-    """
-
-    def __init__(self, in_features, hidden_size):
-        super().__init__()
-        self.linear_1 = nn.Linear(in_features=in_features, out_features=512, bias=True)
-        self.act_1 = nn.GELU(approximate="tanh")
-        self.linear_3 = nn.Linear(in_features=512, out_features=1024, bias=True)
-        self.act_3 = nn.GELU(approximate="tanh")
-        self.linear_4 = nn.Linear(in_features=1024, out_features=hidden_size, bias=True)
-        self.scale = nn.Parameter(torch.ones(1) * 0.1)
-
-    def forward(self, caption):
-        hidden_states = self.linear_1(caption)
-        hidden_states = self.act_1(hidden_states)
-        hidden_states = self.linear_3(hidden_states)
-        hidden_states = self.act_3(hidden_states)
-        hidden_states = self.linear_4(hidden_states)
-        hidden_states = self.scale * hidden_states
-        return hidden_states
 
 
 @dataclass
@@ -106,10 +82,7 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
         causal_temporal_positioning: bool = False,  # For backward compatibility, will be deprecated
     ):
         super().__init__()
-        # Core architectural and positional settings for a 3D transformer used in diffusion.
-        # This module processes spatiotemporal token sequences (video latents) possibly conditioned on text.
-        # Fine-tuning guidance: Common adaptation targets include attention projections inside
-        # `BasicTransformerBlock`, the input/output linear projections, and normalization/adaptive layers.
+       
         self.use_tpu_flash_attention = (
             use_tpu_flash_attention  # FIXME: push config down to the attention modules
         )
@@ -119,7 +92,6 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
         inner_dim = num_attention_heads * attention_head_dim
         self.inner_dim = inner_dim
         # Input token projection: maps per-token channel dimension to model inner_dim for attention blocks.
-        # Fine-tuning: lightweight adapters or LoRA can be added here to adapt input statistics to a new domain.
         self.patchify_proj = nn.Linear(in_channels, inner_dim, bias=True)
         self.positional_embedding_type = positional_embedding_type
         self.positional_embedding_theta = positional_embedding_theta
@@ -143,10 +115,6 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
         # 3. Define transformers blocks
         # Stack of `BasicTransformerBlock`s implementing self/cross-attention + MLP with optional AdaNorm variants.
         # Each block is where most capacity lives and the primary target for LoRA or adapter injection.
-        # Fine-tuning:
-        # - Insert LoRA on attention q/k/v/out projections inside `BasicTransformerBlock`.
-        # - Add lightweight MLP adapters between attention and MLP sublayers.
-        # - Freeze all but a subset of upper blocks for stable domain adaptation.
         self.transformer_blocks = nn.ModuleList(
             [
                 BasicTransformerBlock(
@@ -183,30 +151,54 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
             torch.randn(2, inner_dim) / inner_dim**0.5
         )
         # Output projection: maps model representation back to the latent token channel dimension.
-        # Fine-tuning: LoRA on this projection can help adapt output distribution with minimal parameters.
         self.proj_out = nn.Linear(inner_dim, self.out_channels)
 
         # AdaLayerNormSingle: time-conditioning modulator producing per-token scale/shift given diffusion timestep.
         # Inputs: flattened `timestep` embedding; Outputs: normalized embedding + a learned linear that produces
         #         modulation vectors used later for residual conditioning.
-        # Fine-tuning: swap linear to higher-rank (as below) or add LoRA on its internal linear for time-adaptation.
         self.adaln_single = AdaLayerNormSingle(
             inner_dim, use_additional_conditions=False
         )
         if adaptive_norm == "single_scale":
             # When using single_scale mode, extend the AdaLN capacity to 4x for richer modulation.
-            # Fine-tuning: a good target to add LoRA for per-timestep adaptation without touching attention.
             self.adaln_single.linear = nn.Linear(inner_dim, 4 * inner_dim, bias=True)
 
         self.caption_projection = None
         if caption_channels is not None:
             # Projects external caption/text features to the transformer hidden size for cross-attention.
-            # Fine-tuning: adapters or LoRA on this small projection can align a new T5/text encoder without full retrain.
-            self.caption_projection = AudioProjection(
+            self.caption_projection = PixArtAlphaTextProjection(
                 in_features=caption_channels, hidden_size=inner_dim
             )
 
         self.gradient_checkpointing = False
+        self.audio_adapter = None
+
+    def setup_audio_adapter(self, audio_dim: int, dtype=None, device=None):
+        """
+        Optional adapter to map external audio latents into the PixArt caption projection input space.
+        """
+        if self.caption_projection is None:
+            return
+        target_dim = self.caption_projection.linear_1.in_features
+        if audio_dim == target_dim:
+            self.audio_adapter = None
+            return
+        adapter = nn.Sequential(
+            nn.LayerNorm(audio_dim),
+            nn.Linear(audio_dim, target_dim // 2),
+            nn.GELU(approximate="tanh"),
+            nn.Linear(target_dim // 2, target_dim),
+        )
+        for m in adapter.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, mean=0.0, std=1e-5)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+        if dtype is not None:
+            adapter = adapter.to(dtype=dtype)
+        if device is not None:
+            adapter = adapter.to(device)
+        self.audio_adapter = adapter
 
     def set_use_tpu_flash_attention(self):
         r"""
@@ -227,7 +219,6 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
         skip_block_list: Optional[List[int]] = None,
     ):
         # Create a per-layer mask indicating blocks to bypass during guidance/perturbations.
-        # Fine-tuning: probing the effect of skipping specific layers can help decide which layers to unfreeze.
         if skip_block_list is None or len(skip_block_list) == 0:
             return None
         num_layers = len(self.transformer_blocks)
@@ -258,7 +249,6 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
         # Pre-compute cosine/sine frequency tensors for RoPE across 3D positions.
         # spacing: controls frequency allocation ("exp", "exp_2", "linear", "sqrt").
         # Returns: cos and sin frequency tensors used by attention to rotate query/key features.
-        # Fine-tuning: typically frozen; customizing theta/spacing adapts positional biasing for different video scales.
         dtype = torch.float32  # We need full precision in the freqs_cis computation.
         dim = self.inner_dim
         theta = self.positional_embedding_theta
@@ -368,13 +358,9 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
                 state_dict[new_key] = state_dict.pop(key)
 
             # Construct the module on a meta device for memory-efficient weight loading.
-            # Remove caption_projection weights to allow custom projection dims
-            state_dict = {
-                k: v for k, v in state_dict.items() if "caption_projection" not in k
-            }
             with torch.device("meta"):
                 transformer = cls.from_config(config)
-            transformer.load_state_dict(state_dict, assign=True, strict=False)
+            transformer.load_state_dict(state_dict, assign=True, strict=True)
         elif pretrained_model_path.is_file() and str(pretrained_model_path).endswith(
             ".safetensors"
         ):
@@ -388,14 +374,8 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
             transformer_config = configs["transformer"]
             with torch.device("meta"):
                 transformer = Transformer3DModel.from_config(transformer_config)
-            # Remove caption_projection weights to allow custom projection dims
-            comfy_single_file_state_dict = {
-                k: v
-                for k, v in comfy_single_file_state_dict.items()
-                if "caption_projection" not in k
-            }
             transformer.load_state_dict(
-                comfy_single_file_state_dict, assign=True, strict=False
+                comfy_single_file_state_dict, assign=True, strict=True
             )
         return transformer
 
@@ -496,7 +476,6 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
 
         batch_size = hidden_states.shape[0]
         # AdaLayerNormSingle produces (timestep, embedded_timestep) used as conditioning for blocks and output mod.
-        # Fine-tuning: LoRA on AdaLN can steer speaking style/tempo without touching attention weights.
         timestep, embedded_timestep = self.adaln_single(
             timestep.flatten(),
             {"resolution": None, "aspect_ratio": None},
@@ -510,10 +489,11 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
         )
 
         # 2. Blocks
-        if self.caption_projection is not None:
+        if self.caption_projection is not None and encoder_hidden_states is not None:
             batch_size = hidden_states.shape[0]
-            # Project text/caption features to hidden space for cross-attention.
-            # Fine-tuning: adapters here help align a new speaker ID/text domain.
+            if self.audio_adapter is not None:
+                encoder_hidden_states = self.audio_adapter(encoder_hidden_states)
+
             encoder_hidden_states = self.caption_projection(encoder_hidden_states)
             encoder_hidden_states = encoder_hidden_states.view(
                 batch_size, -1, hidden_states.shape[-1]
@@ -521,8 +501,6 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
 
         for block_idx, block in enumerate(self.transformer_blocks):
             # Main transformer compute. Each block applies attention (self/cross) and MLP with optional skipping.
-            # Fine-tuning: apply LoRA to attention q/k/v/out or small adapters in MLP. You can also partially
-            # unfreeze top-k blocks for subject-specific motion/lip-sync adaptation.
             if self.training and self.gradient_checkpointing:
 
                 def create_custom_forward(module, return_dict=None):

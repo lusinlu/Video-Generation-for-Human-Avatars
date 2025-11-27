@@ -8,9 +8,6 @@ from ltx_video.pipelines.pipeline_ltx_video import LTXVideoPipeline
 import imageio
 import numpy as np
 from pathlib import Path
-from lpips import LPIPS
-from torchmetrics.image.fid import FrechetInceptionDistance
-
 
 @torch.no_grad()
 def validate_epoch(
@@ -57,22 +54,9 @@ def validate_epoch(
         samples_shape = tokens.view(B, -1, tokens.shape[-1]).shape
         t = scheduler.shift_timesteps(samples_shape, t)
 
-        # Build velocity target
         noise = torch.randn_like(tokens)
-        # x_t and v_target (targets in same dtype as model
-        alpha = scheduler.alpha(t)
-        sigma = scheduler.sigma(t)
-        while alpha.dim() < tokens.dim():
-            alpha = alpha.unsqueeze(-1)
-            sigma = sigma.unsqueeze(-1)
-        x_t = alpha * tokens + sigma * noise
-        x0_recon = (x_t - sigma * noise) / (alpha + 1e-12)
-        a_dot = scheduler.alpha_dot(t)
-        s_dot = scheduler.sigma_dot(t)
-        while a_dot.dim() < tokens.dim():
-            a_dot = a_dot.unsqueeze(-1)
-            s_dot = s_dot.unsqueeze(-1)
-        v_target = a_dot * x0_recon + s_dot * noise
+        x_t = scheduler.add_noise(original_samples=tokens, noise=noise, timesteps=t)
+        v_target = scheduler.build_velocity_target(tokens, noise, t)
 
         model_dtype = next(model.parameters()).dtype
         x_t = x_t.to(dtype=model_dtype)
@@ -124,8 +108,11 @@ def validate_video(
     components: dict,
     val_dataloader,
     output_dir: str,
+    lpips_metric,
+    fid_metric,
     num_samples: int = 4,
     frame_rate: int = 22,
+
 ):
     """Sample N items from val_dataloader, run full reconstruction with the provided pipeline (same path as inference),
     save videos, and compute LPIPS + FID vs target videos.
@@ -136,9 +123,6 @@ def validate_video(
     print("[validate_video] starting")
     device = next(transformer.parameters()).device
     Path(output_dir).mkdir(parents=True, exist_ok=True)
-
-    lpips_metric = LPIPS(net="vgg").to(device)
-    fid_metric = FrechetInceptionDistance(normalize=True).to(device)
 
     taken = 0
     for batch_idx, batch in enumerate(val_dataloader):

@@ -109,22 +109,13 @@ def main():
         # Find first speech timestamp from aligned segments
         first_speech = find_first_speech_timestamp(transcript_data.get("segments", []))
         if first_speech is not None and first_speech > 0.0:
-            trimmed = vp.with_name(vp.stem + "_trimmed.mp4")
-            if trim_video_to_start(vp, trimmed, first_speech):
-                # Re-run transcription on trimmed video to produce aligned JSON for final cut
+            if trim_video_to_start(vp, vp, first_speech):
+                # Re-run transcription on trimmed-in-place video to produce aligned JSON
                 print(
-                    f"Re-transcribing trimmed video starting at {first_speech:.2f}s: {trimmed}"
+                    f"Re-transcribing trimmed video starting at {first_speech:.2f}s: {vp}"
                 )
-                transcript_data = transcribe_video(trimmed, whisper_model)
-                if not transcript_data:
-                    # Fall back to original if something failed
-                    final_video_path = str(vp)
-                else:
-                    final_video_path = str(trimmed)
-            else:
-                final_video_path = str(vp)
-        else:
-            final_video_path = str(vp)
+                transcript_data = transcribe_video(vp, whisper_model)
+        final_video_path = str(vp)
 
         all_data.append(
             {

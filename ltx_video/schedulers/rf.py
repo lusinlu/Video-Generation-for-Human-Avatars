@@ -396,3 +396,31 @@ class RectifiedFlowScheduler(SchedulerMixin, ConfigMixin, TimestepShifter):
 
     def sigma_dot(self, t):
         return torch.full_like(t, 1.0)
+
+    def build_velocity_target(
+        self,
+        tokens: torch.Tensor,
+        noise: torch.Tensor,
+        t: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Compute rectified-flow velocity target v_target for given clean tokens x0, noise eps, and timesteps t.
+
+        Args:
+            tokens: clean latents x0, shape [B, seq_len, dim] (or compatible)
+            noise:  noise eps, same shape as tokens
+            t:      timesteps, shape [B]
+        Returns:
+            v_target: velocity field target with same shape as tokens
+        """
+
+        # derivatives: alpha'(t), sigma'(t)
+        a_dot = self.alpha_dot(t)
+        s_dot = self.sigma_dot(t)
+        while a_dot.dim() < tokens.dim():
+            a_dot = a_dot.unsqueeze(-1)
+            s_dot = s_dot.unsqueeze(-1)
+
+        # velocity target
+        v_target = a_dot * tokens + s_dot * noise
+        return v_target
