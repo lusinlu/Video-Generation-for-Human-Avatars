@@ -2,7 +2,6 @@ import torch
 import numpy as np
 from pathlib import Path
 from torch.utils.data import Dataset
-import imageio
 
 
 def collate_latent_pairs(batch):
@@ -68,29 +67,25 @@ class LatentPairDataset(Dataset):
         self,
         audio_latents_dir: str,
         encoder_latents_dir: str,
-        video_dir: str,
-        video_ext: str = ".mp4",
     ):
         self.audio_dir = Path(audio_latents_dir)
         self.encoder_dir = Path(encoder_latents_dir)
-        self.video_dir = Path(video_dir)
-        self.video_ext = video_ext
-        # Collect encoder latent files (*.pt) and find matching audio+video files
+        # Collect encoder latent files (*.pt) and find matching audio
         encoder_files = sorted(self.encoder_dir.glob("*.pt"))
         self.pairs = []
         for ef in encoder_files:
             stem = ef.stem
             audio_file = self.audio_dir / f"{stem}_ff.npy"
-            video_file = self.video_dir / f"{stem}{self.video_ext}"
-            if audio_file.exists() and video_file.exists():
-                self.pairs.append((str(audio_file), str(ef), str(video_file)))
+            if not audio_file.exists():
+                continue
+            self.pairs.append((str(audio_file), str(ef)))
 
     def __len__(self):
         return len(self.pairs)
 
     def __getitem__(self, idx):
         rec = self.pairs[idx]
-        audio_path, encoder_path, video_path = rec[0], rec[1], rec[2]
+        audio_path, encoder_path = rec[0], rec[1]
         # Load FaceFormer latents (audio): shape [B, T, D] or [1, T, D] -> squeeze batch if needed
         audio_lat = np.load(audio_path)
         if audio_lat.ndim == 3 and audio_lat.shape[0] == 1:
@@ -99,19 +94,9 @@ class LatentPairDataset(Dataset):
         # Load VAE encoder latents: stored as {"latents": tensor [C, F, H, W]}
         encoder_data = torch.load(encoder_path, map_location="cpu")
         encoder_lat = encoder_data["latents"].squeeze()  # [C, F, H, W]
-        # Load full target video as tensor [C, F, H, W], normalized to [0,1]
-        reader = imageio.get_reader(video_path)
-        frames = []
-        for i in range(reader.count_frames()):
-            frames.append(reader.get_data(i))
-        reader.close()
-        tgt_np = np.stack(frames, axis=0)  # [F, H, W, C]
-        tgt = torch.from_numpy(tgt_np).permute(3, 0, 1, 2).float() / 255.0  # [C,F,H,W]
         return {
             "audio_latents": audio_lat,  # [T, D]
             "latents": encoder_lat,  # [C, F, H, W]
-            "target_video": tgt,  # [C, F, H, W]
-            "target_video_path": video_path,  # str
             "stem": Path(encoder_path).stem,
         }
 
@@ -135,7 +120,7 @@ class ValidationDataset(Dataset):
             stem = ef.stem
             audio_file = self.audio_dir / f"{stem}_ff.npy"
             video_file = self.video_dir / f"{stem}{self.video_ext}"
-            if audio_file.exists() and video_file.exists():
+            if audio_file.exists():
                 self.pairs.append((str(audio_file), str(ef), str(video_file)))
 
     def __len__(self):

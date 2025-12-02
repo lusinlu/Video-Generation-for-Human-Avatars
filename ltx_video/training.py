@@ -406,7 +406,8 @@ def main():
     setattr(config, "train_mode", args.train_mode)
 
     dataset = LatentPairDataset(
-        config.audio_latents_dir, config.encoder_latents_dir, config.videos
+        config.audio_latents_dir,
+        config.encoder_latents_dir,
     )
     dataloader = DataLoader(
         dataset,

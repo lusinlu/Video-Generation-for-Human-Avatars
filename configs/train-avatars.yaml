@@ -5,12 +5,12 @@ sampler: "uniform"  # options: "uniform", "linear-quadratic", "from_checkpoint"
 
 # Training-specific parameters
 train:
-  audio_latents_dir: "../../ava_data/audio_latents"  # FaceFormer audio latents (*_ff.npy)
-  encoder_latents_dir: "../../ava_data/encoder_latents"  # VAE encoder latents (*.pt)
+  audio_latents_dir: "../../data_avatar021225/audio_latents"  # FaceFormer audio latents (*_ff.npy)
+  encoder_latents_dir: "../../data_avatar021225/encoder_latents"  # VAE encoder latents (*.pt)
 
-  val_audio_latents_dir: "../../ava_data/val_audio_latents"  # FaceFormer audio latents (*_ff.npy)
-  val_encoder_latents_dir: "../../ava_data/val_encoder_latents"  # VAE encoder latents (*.pt)
-  videos: "../../ava_data/video_clips" 
+  val_audio_latents_dir: "../../data_avatar021225/val_audio_latents"  # FaceFormer audio latents (*_ff.npy)
+  val_encoder_latents_dir: "../../data_avatar021225/val_encoder_latents"  # VAE encoder latents (*.pt)
+  videos: "../../data_avatar021225/video_clips" 
 
   output_dir: "../avatars_checkpoints"
   

@@ -149,7 +149,7 @@ def collect_text_for_window(
         e = float(seg.get("end", 0.0))
         if e <= t0 or s >= t1:
             continue
-        seg_words = seg.get("words")
+        seg_words = seg.get("words") or []
         for w in seg_words:
             ws = float(w.get("start", 0.0))
             we = float(w.get("end", 0.0))
@@ -181,6 +181,18 @@ def synthesize_audio(text: str, model_name: str, out_wav_16k: str) -> None:
     y = np.asarray(wav, dtype=np.float32)
     y16 = librosa.resample(y, orig_sr=int(src_sr), target_sr=16000)
     sf.write(out_wav_16k, y16, 16000, subtype="PCM_16")
+
+
+def synthesize_silence(duration_sec: float, out_wav_16k: str) -> None:
+    """
+    Create a silent 16kHz mono wav that matches the clip duration.
+    """
+    safe_duration = max(float(duration_sec), 0.0)
+    if not np.isfinite(safe_duration) or safe_duration <= 0.0:
+        safe_duration = 1.0  # fallback to 1 second of silence
+    num_samples = max(1, int(round(safe_duration * 16000)))
+    silence = np.zeros(num_samples, dtype=np.float32)
+    sf.write(out_wav_16k, silence, 16000, subtype="PCM_16")
 
 
 def extract_faceformer_latents(model: Faceformer, wav_path: str) -> np.ndarray:
@@ -261,15 +273,27 @@ def main():
             if "end_time_sec" in meta
             else float(meta["end_frame_exclusive"]) / float(meta["fps"])
         )
+        clip_duration_sec = float(t1 - t0)
+        if not np.isfinite(clip_duration_sec) or clip_duration_sec <= 0.0:
+            clip_duration_sec = (
+                float(meta.get("end_frame_exclusive", 0))
+                - float(meta.get("start_frame", 0))
+            ) / max(float(meta.get("fps", 25.0)), 1e-8)
+        if not np.isfinite(clip_duration_sec) or clip_duration_sec <= 0.0:
+            clip_duration_sec = 1.0
+
         text = collect_text_for_window(trans_map, video_base, t0, t1)
         if not text and stem_base != video_base:
             text = collect_text_for_window(trans_map, stem_base, t0, t1)
-        if not text:
-            continue
+        text = (text or "").strip()
+        has_text = bool(text)
 
         # Synthesize audio
         wav_path = os.path.join(args.audio_out, f"{stem}.wav")
-        synthesize_audio(text, args.tts_model, wav_path)
+        if has_text:
+            synthesize_audio(text, args.tts_model, wav_path)
+        else:
+            synthesize_silence(clip_duration_sec, wav_path)
 
         # Extract FaceFormer latents and save
         lat = extract_faceformer_latents(model, wav_path)
@@ -280,8 +304,10 @@ def main():
             json.dump(
                 {
                     "text": text,
+                    "is_silence": not has_text,
                     "start_time_sec": t0,
                     "end_time_sec": t1,
+                    "clip_duration_sec": clip_duration_sec,
                     "wav": wav_path,
                     "faceformer_latents": out_npy,
                 },

@@ -85,6 +85,15 @@ def main():
         default=Path("video_transcripts.json"),
         help="Path to transcripts JSON file (output)",
     )
+    parser.add_argument(
+        "--delete_unsaved_videos",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Delete any videos in videos_dir that are not represented in the "
+            "final transcripts JSON (default: True)"
+        ),
+    )
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -126,6 +135,27 @@ def main():
 
         with open(args.transcripts_file, "w") as f:
             json.dump(all_data, f, indent=2)
+
+    if args.delete_unsaved_videos:
+        known_paths = {p.resolve() for p in paths}
+        saved_paths = set()
+        for entry in all_data:
+            vp = entry.get("video_path")
+            if not vp:
+                continue
+            try:
+                entry_path = Path(vp).resolve()
+            except Exception:
+                continue
+            if entry_path in known_paths:
+                saved_paths.add(entry_path)
+        for orphan in sorted(known_paths - saved_paths):
+            if orphan.exists():
+                try:
+                    orphan.unlink()
+                    print(f"Deleted unsaved video: {orphan}")
+                except Exception as exc:
+                    print(f"Failed to delete {orphan}: {exc}")
 
     print(f"Processed {len(all_data)} videos → {args.transcripts_file}")
     for pattern in ("*_preview.mp4", "*_preview_trimmed.mp4"):
