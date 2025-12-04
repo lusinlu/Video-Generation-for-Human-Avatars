@@ -16,7 +16,6 @@ import torch
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import matplotlib.tri as mtri
 
 from TTS.api import TTS
 from preprocessing.FaceFormer.faceformer import Faceformer
