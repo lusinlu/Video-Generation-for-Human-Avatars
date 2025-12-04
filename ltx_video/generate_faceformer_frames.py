@@ -57,7 +57,9 @@ def _load_audio_tensor(wav_path: Path, device: torch.device) -> torch.Tensor:
     if audio.ndim > 1:
         audio = audio.mean(axis=1)
     if sr != 16000:
-        audio = librosa.resample(np.asarray(audio, dtype=np.float32), orig_sr=sr, target_sr=16000)
+        audio = librosa.resample(
+            np.asarray(audio, dtype=np.float32), orig_sr=sr, target_sr=16000
+        )
     audio = torch.from_numpy(np.asarray(audio, dtype=np.float32)).unsqueeze(0)
     return audio.to(device)
 
@@ -83,6 +85,7 @@ def _load_template_vertices(path: Path) -> np.ndarray:
     if verts.ndim != 2 or verts.shape[1] != 3:
         raise ValueError(f"Template vertices must have shape (N, 3), got {verts.shape}")
     return verts
+
 
 def _load_faceformer(
     ckpt_path: Path,
@@ -140,68 +143,70 @@ def _render_frame(
 ) -> None:
     """
     Render frame as binary mask (black background, white face dots).
-    
+
     If face_bbox is provided (x_min, y_min, x_max, y_max) in [0,1] normalized coords,
     positions and scales the face to match the bbox within the image_size canvas.
     """
     coords, depth = _project_vertices(vertices)
-    
+
     # Create figure with black background
     fig = plt.figure(figsize=(image_size / 100.0, image_size / 100.0), dpi=100)
     ax = fig.add_subplot(111)
     ax.axis("off")
     ax.set_aspect("equal")
-    
+
     # Set black background
-    fig.patch.set_facecolor('black')
-    ax.set_facecolor('black')
-    
+    fig.patch.set_facecolor("black")
+    ax.set_facecolor("black")
+
     if face_bbox is not None:
         # Unpack normalized bbox coordinates
         x_min, y_min, x_max, y_max = face_bbox
-        
+
         # Convert normalized coordinates to axis coordinates
         # In normalized coords: (0,0) is top-left, (1,1) is bottom-right
         # In matplotlib coords: (-1,-1) is bottom-left, (1,1) is top-right
         # So we need to map and flip Y axis
-        
+
         # Bbox center in normalized coords
         bbox_center_x = (x_min + x_max) / 2.0
         bbox_center_y = (y_min + y_max) / 2.0
-        
+
         # Bbox size in normalized coords
         bbox_width = x_max - x_min
         bbox_height = y_max - y_min
-        
+
         # Map normalized coords [0,1] to matplotlib coords [-1,1]
         # X: 0->-1, 1->1, so: x_mpl = 2*x_norm - 1
         # Y: 0->1 (top), 1->-1 (bottom), so: y_mpl = 1 - 2*y_norm (flip Y)
         center_x_mpl = 2.0 * bbox_center_x - 1.0
         center_y_mpl = 1.0 - 2.0 * bbox_center_y
-        
+
         # Scale factor: bbox uses portion of image, so scale coordinates accordingly
         scale_x = bbox_width * 2.0  # Bbox width maps to range of 2 in matplotlib
         scale_y = bbox_height * 2.0
-        
+
         # Transform coords: scale them to fit bbox, then translate to bbox center
         coords_scaled = coords.copy()
         coords_scaled[:, 0] = coords_scaled[:, 0] * scale_x + center_x_mpl
         coords_scaled[:, 1] = coords_scaled[:, 1] * scale_y + center_y_mpl
-        
+
         # Set limits to full image
         ax.set_xlim(-1.0, 1.0)
         ax.set_ylim(-1.0, 1.0)
-        
+
         # Render as white dots on black background (binary mask)
-        ax.scatter(coords_scaled[:, 0], coords_scaled[:, 1], c='white', s=5, linewidths=0)
+        ax.scatter(
+            coords_scaled[:, 0], coords_scaled[:, 1], c="white", s=5, linewidths=0
+        )
     else:
         # Original behavior: centered face
         ax.set_xlim(-1.05, 1.05)
         ax.set_ylim(-1.05, 1.05)
         # Render as white dots on black background (binary mask)
-        ax.scatter(coords[:, 0], coords[:, 1], c='white', s=5, linewidths=0)
-    
-    fig.savefig(out_path, bbox_inches="tight", pad_inches=0, facecolor='black')
+        ax.scatter(coords[:, 0], coords[:, 1], c="white", s=5, linewidths=0)
+
+    fig.savefig(out_path, bbox_inches="tight", pad_inches=0, facecolor="black")
     plt.close(fig)
 
 
@@ -229,7 +234,7 @@ def generate_faceformer_frames(
 ) -> Path:
     """
     Generate RGB face frames driven by the provided text.
-    
+
     Args:
         text: Text to convert to speech and drive facial animation
         output_dir: Directory to save rendered frames
@@ -279,7 +284,7 @@ def generate_faceformer_frames(
         predictions = predictions.detach().cpu().numpy()
 
     seq = predictions.reshape(predictions.shape[1], template.shape[0], 3)
-    frames_dir = Path(output_dir) 
+    frames_dir = Path(output_dir)
     frames_dir.mkdir(parents=True, exist_ok=True)
 
     # Calculate initial number of output frames based on FPS
@@ -289,18 +294,26 @@ def generate_faceformer_frames(
     else:
         # Use all available frames
         num_output_frames = seq.shape[0]
-    
+
     # Adjust to match the required format: (N * 8 + 1)
     # This ensures compatibility with the model's frame requirements
     num_output_frames_adjusted = ((num_output_frames - 2) // 8 + 1) * 8 + 1
     # Ensure we don't exceed available frames
     num_output_frames_adjusted = min(num_output_frames_adjusted, seq.shape[0])
-    
+
     # Select evenly spaced frames from the sequence
-    frame_indices = np.linspace(0, seq.shape[0] - 1, num_output_frames_adjusted, dtype=int)
-    
+    frame_indices = np.linspace(
+        0, seq.shape[0] - 1, num_output_frames_adjusted, dtype=int
+    )
+
     for output_idx, model_idx in enumerate(frame_indices):
         frame_path = frames_dir / f"frame_{output_idx:05d}.png"
-        _render_frame(seq[model_idx], frame_path, image_size=image_size, cmap=cmap, face_bbox=face_bbox)
+        _render_frame(
+            seq[model_idx],
+            frame_path,
+            image_size=image_size,
+            cmap=cmap,
+            face_bbox=face_bbox,
+        )
 
     return frames_dir
