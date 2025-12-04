@@ -1,29 +1,31 @@
 import os
 import random
+from datetime import datetime
 from pathlib import Path
-from typing import Optional, Union
+from diffusers.utils import logging
+from typing import Optional, List, Union
 import yaml
+from transformers import HfArgumentParser
 import imageio
-import argparse
 import json
 import numpy as np
 import torch
 from safetensors import safe_open
-from safetensors.torch import load_file as st_load_file
 from PIL import Image
 import torchvision.transforms.functional as TVF
+from transformers import (
+    T5EncoderModel,
+    T5Tokenizer,
+)
 from huggingface_hub import hf_hub_download
 from dataclasses import dataclass, field
 
-# from torch.serialization import add_safe_globals
-# class TrainConfig:  # type: ignore
-#     pass
-# add_safe_globals([TrainConfig])
-
-
+import ltx_video.pipelines.crf_compressor as crf_compressor
+from ltx_video.generate_faceformer_frames import generate_faceformer_frames
 from ltx_video.models.autoencoders.causal_video_autoencoder import (
     CausalVideoAutoencoder,
 )
+from ltx_video.models.autoencoders.latent_upsampler import LatentUpsampler
 from ltx_video.models.transformers.symmetric_patchifier import SymmetricPatchifier
 from ltx_video.models.transformers.transformer3d import Transformer3DModel
 from ltx_video.pipelines.pipeline_ltx_video import (
@@ -31,8 +33,17 @@ from ltx_video.pipelines.pipeline_ltx_video import (
     LTXMultiScalePipeline,
 )
 from ltx_video.schedulers.rf import RectifiedFlowScheduler
-from ltx_video.models.autoencoders.latent_upsampler import LatentUpsampler
-import ltx_video.pipelines.crf_compressor as crf_compressor
+from ltx_video.utils.skip_layer_strategy import SkipLayerStrategy
+from ltx_video.utils.torch_utils import detect_face_bbox
+
+logger = logging.get_logger("LTX-Video")
+
+
+def get_total_gpu_memory():
+    if torch.cuda.is_available():
+        total_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+        return total_memory
+    return 0
 
 
 def get_device():
@@ -90,16 +101,6 @@ def load_image_to_tensor_with_resize_and_crop(
     frame_tensor = (frame_tensor / 127.5) - 1.0
     # Create 5D tensor: (batch_size=1, channels=3, num_frames=1, height, width)
     return frame_tensor.unsqueeze(0).unsqueeze(2)
-
-
-def estimate_num_frames_from_text(text: str, frame_rate: int) -> int:
-    # Simple heuristic: ~150 words/minute ≈ 2.5 words/sec
-    words = max(1, len(text.strip().split()))
-    duration_sec = max(1.0, words / 2.5)
-    frames_raw = int(duration_sec * frame_rate)
-    # Round to (8k + 1)
-    frames = ((max(frames_raw, 9) - 1) // 8 + 1) * 8 + 1
-    return frames
 
 
 def calculate_padding(
@@ -179,14 +180,24 @@ def seed_everething(seed: int):
         torch.mps.manual_seed(seed)
 
 
+def create_transformer(ckpt_path: str, precision: str) -> Transformer3DModel:
+    if precision == "bfloat16":
+        return Transformer3DModel.from_pretrained(ckpt_path).to(torch.bfloat16)
+    else:
+        return Transformer3DModel.from_pretrained(ckpt_path)
+
+
 def create_ltx_video_pipeline(
     ckpt_path: str,
     precision: str,
-    transformer_path: str,
+    text_encoder_model_name_or_path: str,
     sampler: Optional[str] = None,
     device: Optional[str] = None,
 ) -> LTXVideoPipeline:
     ckpt_path = Path(ckpt_path)
+    assert os.path.exists(
+        ckpt_path
+    ), f"Ckpt path provided (--ckpt_path) {ckpt_path} does not exist"
 
     with safe_open(ckpt_path, framework="pt") as f:
         metadata = f.metadata()
@@ -195,18 +206,7 @@ def create_ltx_video_pipeline(
         allowed_inference_steps = configs.get("allowed_inference_steps", None)
 
     vae = CausalVideoAutoencoder.from_pretrained(ckpt_path)
-
-    merged_sd = st_load_file(transformer_path, device="cpu")
-    # Read transformer config from metadata if present
-    with safe_open(transformer_path, framework="pt") as f:
-        meta = f.metadata() or {}
-        cfg_json = meta.get("config")
-    cfg_obj = json.loads(cfg_json)["transformer"]
-    # Build Transformer3DModel from config
-    transformer = Transformer3DModel.from_config(cfg_obj)
-    transformer.load_state_dict(merged_sd, strict=True)
-    if precision == "bfloat16":
-        transformer = transformer.to(torch.bfloat16)
+    transformer = create_transformer(ckpt_path, precision)
 
     # Use constructor if sampler is specified, otherwise use from_pretrained
     if sampler == "from_checkpoint" or not sampler:
@@ -216,16 +216,27 @@ def create_ltx_video_pipeline(
             sampler=("Uniform" if sampler.lower() == "uniform" else "LinearQuadratic")
         )
 
+    text_encoder = T5EncoderModel.from_pretrained(
+        text_encoder_model_name_or_path, subfolder="text_encoder"
+    )
     patchifier = SymmetricPatchifier(patch_size=1)
-    # Move core modules to the selected device for compute
+    tokenizer = T5Tokenizer.from_pretrained(
+        text_encoder_model_name_or_path, subfolder="tokenizer"
+    )
+
     transformer = transformer.to(device)
     vae = vae.to(device)
+    text_encoder = text_encoder.to(device)
+
     vae = vae.to(torch.bfloat16)
+    text_encoder = text_encoder.to(torch.bfloat16)
 
     # Use submodels for the pipeline
     submodel_dict = {
         "transformer": transformer,
         "patchifier": patchifier,
+        "text_encoder": text_encoder,
+        "tokenizer": tokenizer,
         "scheduler": scheduler,
         "vae": vae,
         "allowed_inference_steps": allowed_inference_steps,
@@ -233,7 +244,6 @@ def create_ltx_video_pipeline(
 
     pipeline = LTXVideoPipeline(**submodel_dict)
     pipeline = pipeline.to(device)
-
     return pipeline
 
 
@@ -247,6 +257,7 @@ def create_latent_upsampler(latent_upsampler_model_path: str, device: str):
 def load_pipeline_config(pipeline_config: str):
     current_file = Path(__file__)
 
+    path = None
     if os.path.isfile(current_file.parent / pipeline_config):
         path = current_file.parent / pipeline_config
     elif os.path.isfile(pipeline_config):
@@ -261,29 +272,75 @@ def load_pipeline_config(pipeline_config: str):
 @dataclass
 class InferenceConfig:
     prompt: str = field(metadata={"help": "Prompt for the generation"})
+    text: str = field(metadata={"help": "Text to pronounce"})
 
-    pipeline_config: str = field(metadata={"help": "Path to the pipeline config file"})
+    output_path: str = field(
+        default_factory=lambda: Path(
+            f"outputs/{datetime.today().strftime('%Y-%m-%d')}"
+        ),
+        metadata={"help": "Path to the folder to save the output video"},
+    )
+
+    # Pipeline settings
+    pipeline_config: str = field(
+        default="configs/ltxv-13b-0.9.7-dev.yaml",
+        metadata={"help": "Path to the pipeline config file"},
+    )
+    seed: int = field(
+        default=171198, metadata={"help": "Random seed for the inference"}
+    )
+    height: int = field(
+        default=192, metadata={"help": "Height of the output video frames"}
+    )
+    width: int = field(
+        default=320, metadata={"help": "Width of the output video frames"}
+    )
+    num_frames: int = field(
+        default=121,
+        metadata={"help": "Number of frames to generate in the output video"},
+    )
+    frame_rate: int = field(
+        default=20, metadata={"help": "Frame rate for the output video"}
+    )
+    offload_to_cpu: bool = field(
+        default=False, metadata={"help": "Offloading unnecessary computations to CPU."}
+    )
+    negative_prompt: str = field(
+        default="worst quality, inconsistent motion, blurry, jittery, distorted",
+        metadata={"help": "Negative prompt for undesired features"},
+    )
+
+    # Video-to-video arguments
     input_media_path: Optional[str] = field(
+        default=None,
         metadata={
-            "help": "Path to the input image to be modified using the video-to-video pipeline"
+            "help": "Path to the input video (or image) to be modified using the video-to-video pipeline"
         },
     )
-    output_path: str = field(metadata={"help": "Path to save outputs"})
-    transformer_path: str = field(metadata={"help": "Path to transformer weights"})
+
+    # Conditioning
+    image_cond_noise_scale: float = field(
+        default=0.0,
+        metadata={"help": "Amount of noise to add to the conditioned image"},
+    )
+    conditioning_media_paths: Optional[List[str]] = field(
+        default=None,
+        metadata={
+            "help": "List of paths to conditioning media (images or videos). Each path will be used as a conditioning item."
+        },
+    )
+    conditioning_strengths: Optional[List[float]] = field(
+        default=None,
+        metadata={
+            "help": "List of conditioning strengths (between 0 and 1) for each conditioning item. Must match the number of conditioning items."
+        },
+    )
 
 
 def infer(config: InferenceConfig):
     pipeline_config = load_pipeline_config(config.pipeline_config)
 
-    ltxv_model_name_or_path = pipeline_config["checkpoint_path"]
-    if not os.path.isfile(ltxv_model_name_or_path):
-        ltxv_model_path = hf_hub_download(
-            repo_id="Lightricks/LTX-Video",
-            filename=ltxv_model_name_or_path,
-            repo_type="model",
-        )
-    else:
-        ltxv_model_path = ltxv_model_name_or_path
+    ltxv_model_path = pipeline_config["checkpoint_path"]
 
     spatial_upscaler_model_name_or_path = pipeline_config.get(
         "spatial_upscaler_model_path"
@@ -299,46 +356,51 @@ def infer(config: InferenceConfig):
     else:
         spatial_upscaler_model_path = spatial_upscaler_model_name_or_path
 
-    # Helper to get required config values from YAML
-    def cfg_get_required(key):
-        if key in pipeline_config:
-            return pipeline_config[key]
-        raise KeyError(f"Missing required key '{key}' in pipeline config")
+    conditioning_media_paths = config.conditioning_media_paths
+    config.num_frames = len(os.listdir(conditioning_media_paths[1]))
 
-    seed = cfg_get_required("seed")
-    height = cfg_get_required("height")
-    width = cfg_get_required("width")
-    frame_rate = cfg_get_required("frame_rate")
+    seed_everething(config.seed)
+    if config.offload_to_cpu and not torch.cuda.is_available():
+        logger.warning(
+            "offload_to_cpu is set to True, but offloading will not occur since the model is already running on CPU."
+        )
+        offload_to_cpu = False
+    else:
+        offload_to_cpu = config.offload_to_cpu and get_total_gpu_memory() < 30
 
-    seed_everething(seed)
-
-    output_dir = Path(config.output_path)
+    output_dir = (
+        Path(config.output_path)
+        if config.output_path
+        else Path(f"outputs/{datetime.today().strftime('%Y-%m-%d')}")
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    decided_num_frames = estimate_num_frames_from_text(config.prompt or "", frame_rate)
-    height_padded = ((height - 1) // 32 + 1) * 32
-    width_padded = ((width - 1) // 32 + 1) * 32
-    num_frames_padded = ((decided_num_frames - 2) // 8 + 1) * 8 + 1
+    # Adjust dimensions to be divisible by 32 and num_frames to be (N * 8 + 1)
+    height_padded = ((config.height - 1) // 32 + 1) * 32
+    width_padded = ((config.width - 1) // 32 + 1) * 32
+    # num_frames_padded = ((config.num_frames - 2) // 8 + 1) * 8 + 1
+    num_frames_padded = config.num_frames
 
-    padding = calculate_padding(height, width, height_padded, width_padded)
+    padding = calculate_padding(
+        config.height, config.width, height_padded, width_padded
+    )
 
-    print(f"Padded dimensions: {height_padded}x{width_padded}x{num_frames_padded}")
+    logger.warning(
+        f"Padded dimensions: {height_padded}x{width_padded}x{num_frames_padded}"
+    )
 
     device = get_device()
 
     precision = pipeline_config["precision"]
+    text_encoder_model_name_or_path = pipeline_config["text_encoder_model_name_or_path"]
     sampler = pipeline_config.get("sampler", None)
 
     pipeline = create_ltx_video_pipeline(
         ckpt_path=ltxv_model_path,
         precision=precision,
+        text_encoder_model_name_or_path=text_encoder_model_name_or_path,
         sampler=sampler,
         device=device,
-        transformer_path=config.transformer_path,
-    )
-
-    print(
-        f"[inference] VAE decoder timestep_conditioning={getattr(pipeline.vae.decoder, 'timestep_conditioning', None)}"
     )
 
     if pipeline_config.get("pipeline_type", None) == "multi-scale":
@@ -352,35 +414,43 @@ def infer(config: InferenceConfig):
         pipeline = LTXMultiScalePipeline(pipeline, latent_upsampler=latent_upsampler)
 
     media_item = None
-    if config.input_media_path:
-        media_item = load_media_file(
-            media_path=config.input_media_path,
-            height=height,
-            width=width,
-            max_frames=num_frames_padded,
+
+    conditioning_items = (
+        prepare_conditioning(
+            conditioning_media_paths=conditioning_media_paths,
+            height=config.height,
+            width=config.width,
             padding=padding,
         )
+        if conditioning_media_paths
+        else None
+    )
 
-    skip_layer_strategy = None
+    stg_mode = pipeline_config.get("stg_mode", "attention_values")
+    del pipeline_config["stg_mode"]
+    if stg_mode.lower() == "stg_av" or stg_mode.lower() == "attention_values":
+        skip_layer_strategy = SkipLayerStrategy.AttentionValues
+    elif stg_mode.lower() == "stg_as" or stg_mode.lower() == "attention_skip":
+        skip_layer_strategy = SkipLayerStrategy.AttentionSkip
+    elif stg_mode.lower() == "stg_r" or stg_mode.lower() == "residual":
+        skip_layer_strategy = SkipLayerStrategy.Residual
+    elif stg_mode.lower() == "stg_t" or stg_mode.lower() == "transformer_block":
+        skip_layer_strategy = SkipLayerStrategy.TransformerBlock
+    else:
+        raise ValueError(f"Invalid spatiotemporal guidance mode: {stg_mode}")
 
     # Prepare input for the pipeline
     sample = {
         "prompt": config.prompt,
+        "prompt_attention_mask": None,
+        "negative_prompt": config.negative_prompt,
+        "negative_prompt_attention_mask": None,
     }
 
-    generator = torch.Generator(device=device).manual_seed(seed)
+    generator = torch.Generator(device=device).manual_seed(config.seed)
 
-    # Remove sizing/runtime keys from YAML to avoid duplicate kwargs
-    filtered_cfg = {
-        k: v
-        for k, v in pipeline_config.items()
-        if k not in ["height", "width", "num_frames"]
-    }
-
-    # Engage decoder last-step denoising by passing a small decode_timestep
-    # (paper suggests decoder performs final step in pixel space)
     images = pipeline(
-        **filtered_cfg,
+        **pipeline_config,
         skip_layer_strategy=skip_layer_strategy,
         generator=generator,
         output_type="pt",
@@ -388,11 +458,15 @@ def infer(config: InferenceConfig):
         height=height_padded,
         width=width_padded,
         num_frames=num_frames_padded,
+        frame_rate=config.frame_rate,
         **sample,
         media_items=media_item,
+        conditioning_items=conditioning_items,
         is_video=True,
         vae_per_channel_normalize=True,
+        image_cond_noise_scale=config.image_cond_noise_scale,
         mixed_precision=(precision == "mixed_precision"),
+        offload_to_cpu=offload_to_cpu,
         device=device,
     ).images
 
@@ -404,14 +478,14 @@ def infer(config: InferenceConfig):
         pad_bottom = images.shape[3]
     if pad_right == 0:
         pad_right = images.shape[4]
-    images = images[:, :, :decided_num_frames, pad_top:pad_bottom, pad_left:pad_right]
+    images = images[:, :, : config.num_frames, pad_top:pad_bottom, pad_left:pad_right]
 
     for i in range(images.shape[0]):
         # Gathering from B, C, F, H, W to C, F, H, W and then permuting to F, H, W, C
         video_np = images[i].permute(1, 2, 3, 0).cpu().float().numpy()
         # Unnormalizing images to [0, 255] range
         video_np = (video_np * 255).astype(np.uint8)
-        fps = frame_rate
+        fps = config.frame_rate
         height, width = video_np.shape[1:3]
         # In case a single image is generated
         if video_np.shape[0] == 1:
@@ -419,8 +493,8 @@ def infer(config: InferenceConfig):
                 f"image_output_{i}",
                 ".png",
                 prompt=config.prompt,
-                seed=seed,
-                resolution=(height, width, decided_num_frames),
+                seed=config.seed,
+                resolution=(height, width, config.num_frames),
                 dir=output_dir,
             )
             imageio.imwrite(output_filename, video_np[0])
@@ -429,8 +503,8 @@ def infer(config: InferenceConfig):
                 f"video_output_{i}",
                 ".mp4",
                 prompt=config.prompt,
-                seed=seed,
-                resolution=(height, width, decided_num_frames),
+                seed=config.seed,
+                resolution=(height, width, config.num_frames),
                 dir=output_dir,
             )
 
@@ -439,64 +513,120 @@ def infer(config: InferenceConfig):
                 for frame in video_np:
                     video.append_data(frame)
 
-        print(f"Output saved to {output_filename}")
+        logger.warning(f"Output saved to {output_filename}")
+
+
+def prepare_conditioning(
+    conditioning_media_paths: List[str],
+    height: int,
+    width: int,
+    padding: tuple[int, int, int, int],
+) -> Optional[List]:
+    """Prepare conditioning items based on input media paths and their parameters.
+
+    Args:
+        conditioning_media_paths: List of paths to conditioning media (images or videos)
+        conditioning_strengths: List of conditioning strengths for each media item
+        height: Height of the output frames
+        width: Width of the output frames
+        num_frames: Number of frames in the output video
+        padding: Padding to apply to the frames
+        pipeline: LTXVideoPipeline object used for condition video trimming
+
+    Returns:
+        A list of ConditioningItem objects.
+    """
+    conditioning_items = []
+    for path in conditioning_media_paths:
+
+        media_tensor = load_media_file(
+            media_path=path,
+            height=height,
+            width=width,
+            padding=padding,
+            just_crop=False,
+        )
+        conditioning_items.append(media_tensor)
+    return conditioning_items
 
 
 def load_media_file(
     media_path: str,
     height: int,
     width: int,
-    max_frames: int,
     padding: tuple[int, int, int, int],
     just_crop: bool = False,
 ) -> torch.Tensor:
+    """Load media file from path (image, video, or folder of images).
 
-    media_tensor = load_image_to_tensor_with_resize_and_crop(
-        media_path, height, width, just_crop=just_crop
-    )
-    media_tensor = torch.nn.functional.pad(media_tensor, padding)
+    Args:
+        media_path: Path to image file, video file, or folder containing images
+        height: Target height
+        width: Target width
+        max_frames: Maximum number of frames to load
+        padding: Padding to apply
+        just_crop: Whether to just crop without resizing
+
+    Returns:
+        Tensor of shape (1, 3, num_frames, height, width)
+    """
+    # Check if it's a folder with images
+    if os.path.isdir(media_path):
+        # Load all image files from folder
+        image_files = sorted(
+            [
+                f
+                for f in os.listdir(media_path)
+                if f.lower().endswith((".png", ".jpg", ".jpeg", ".bmp"))
+            ]
+        )
+
+        if not image_files:
+            raise ValueError(f"No image files found in folder: {media_path}")
+
+        # Use all frames if max_frames is None, otherwise limit to max_frames
+        num_input_frames = len(image_files)
+
+        # Read and preprocess frames from folder
+        frames = []
+        for i in range(num_input_frames):
+            frame_path = os.path.join(media_path, image_files[i])
+            frame = Image.open(frame_path).convert("RGB")
+            frame_tensor = load_image_to_tensor_with_resize_and_crop(
+                frame, height, width, just_crop=just_crop
+            )
+            frame_tensor = torch.nn.functional.pad(frame_tensor, padding)
+            frames.append(frame_tensor)
+
+        # Stack frames along the temporal dimension
+        media_tensor = torch.cat(frames, dim=2)
+
+    else:
+        media_tensor = load_image_to_tensor_with_resize_and_crop(
+            media_path, height, width, just_crop=just_crop
+        )
+        media_tensor = torch.nn.functional.pad(media_tensor, padding)
+
     return media_tensor
 
 
-def cli_main():
-    parser = argparse.ArgumentParser(description="LTX-Video avatar inference")
-    parser.add_argument(
-        "--pipeline_config",
-        type=str,
-        required=True,
-        help="Path to inference yaml (e.g., configs/inference-avatars.yaml)",
-    )
-    parser.add_argument(
-        "--input_media_path", type=str, required=True, help="Path to input image/video"
-    )
-    parser.add_argument(
-        "--prompt",
-        type=str,
-        required=True,
-        help="Prompt text (will be converted to audio latents)",
-    )
-    parser.add_argument(
-        "--output_path", type=str, default="./result", help="Output directory"
-    )
-    parser.add_argument(
-        "--transformer_path",
-        type=str,
-        default="../outputs/avatars_checkpoints/model_merged_best.safetensors",
-    )
+def main():
+    parser = HfArgumentParser(InferenceConfig)
+    config = parser.parse_args_into_dataclasses()[0]
 
-    args = parser.parse_args()
+    # Load image and detect face bbox
+    conditioning_image = Image.open(config.conditioning_media_paths[0]).convert("RGB")
+    face_bbox = detect_face_bbox(conditioning_image)
 
-    out_dir = args.output_path
-    cfg = InferenceConfig(
-        prompt=args.prompt,
-        output_path=out_dir,
-        pipeline_config=args.pipeline_config,
-        input_media_path=args.input_media_path,
-        transformer_path=args.transformer_path,
+    # Generate FaceFormer frames with face positioned according to bbox
+    motion_frames_path = generate_faceformer_frames(
+        text=config.text,
+        output_dir=os.path.join(config.output_path, "faceformer_frames"),
+        face_bbox=face_bbox,
     )
-
-    infer(cfg)
+    config.conditioning_media_paths.append(motion_frames_path)
+    infer(config=config)
 
 
 if __name__ == "__main__":
-    cli_main()
+    main()

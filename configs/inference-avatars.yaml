@@ -1,5 +1,6 @@
 pipeline_type: base
-checkpoint_path: "ltxv-2b-0.9.6-dev-04-25.safetensors"
+checkpoint_path: "../../ltxv-2b-0.9.6-dev-04-25.safetensors"
+vae_checkpoint_path: "../../ltxv-2b-0.9.6-dev-04-25.safetensors"
 guidance_scale: 1
 stg_scale: 0
 rescaling_scale: 1
@@ -11,11 +12,8 @@ decode_noise_scale: 0.025
 precision: "bfloat16"
 sampler: "from_checkpoint" # options: "uniform", "linear-quadratic", "from_checkpoint"
 stochastic_sampling: false
-lora_rank: 8
-lora_alpha: 8
 output_path: "./result"
 seed: 171198
-height: 704
-width: 1216
-frame_rate: 22
-offload_to_cpu: True
+spatial_upscaler_model_path: null  # set to model path when using multi-scale pipeline
+text_encoder_model_name_or_path: "PixArt-alpha/PixArt-XL-2-1024-MS"
+

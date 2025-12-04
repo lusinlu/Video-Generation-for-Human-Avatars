@@ -171,34 +171,6 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
             )
 
         self.gradient_checkpointing = False
-        self.audio_adapter = None
-
-    def setup_audio_adapter(self, audio_dim: int, dtype=None, device=None):
-        """
-        Optional adapter to map external audio latents into the PixArt caption projection input space.
-        """
-        if self.caption_projection is None:
-            return
-        target_dim = self.caption_projection.linear_1.in_features
-        if audio_dim == target_dim:
-            self.audio_adapter = None
-            return
-        adapter = nn.Sequential(
-            nn.LayerNorm(audio_dim),
-            nn.Linear(audio_dim, target_dim // 2),
-            nn.GELU(approximate="tanh"),
-            nn.Linear(target_dim // 2, target_dim),
-        )
-        for m in adapter.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.normal_(m.weight, mean=0.0, std=1e-5)
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
-        if dtype is not None:
-            adapter = adapter.to(dtype=dtype)
-        if device is not None:
-            adapter = adapter.to(device)
-        self.audio_adapter = adapter
 
     def set_use_tpu_flash_attention(self):
         r"""
@@ -489,11 +461,8 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
         )
 
         # 2. Blocks
-        if self.caption_projection is not None and encoder_hidden_states is not None:
+        if self.caption_projection is not None:
             batch_size = hidden_states.shape[0]
-            if self.audio_adapter is not None:
-                encoder_hidden_states = self.audio_adapter(encoder_hidden_states)
-
             encoder_hidden_states = self.caption_projection(encoder_hidden_states)
             encoder_hidden_states = encoder_hidden_states.view(
                 batch_size, -1, hidden_states.shape[-1]
