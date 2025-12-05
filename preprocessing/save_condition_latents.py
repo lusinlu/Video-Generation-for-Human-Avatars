@@ -285,14 +285,14 @@ def main():
         # Read video
         frames, fps = read_video(vid_path)
         if not frames:
-            print(f"  ⚠ No frames found, skipping")
+            print("No frames found, skipping")
             continue
 
         base = os.path.splitext(os.path.basename(vid_path))[0]
         clips = iter_clips(len(frames), args.clip_length, args.stride)
 
         if not clips:
-            print(f"  ⚠ No clips generated, skipping")
+            print("No clips generated, skipping")
             continue
 
         print(f"  Found {len(clips)} clip(s)")
@@ -316,7 +316,6 @@ def main():
             # Get text for this clip using word-level timestamps
             start_time = s / max(fps, 1e-8)
             end_time = e / max(fps, 1e-8)
-            clip_duration = end_time - start_time
 
             clip_text = get_clip_text(
                 transcripts, base, start_time, end_time, args.default_text
