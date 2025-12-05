@@ -43,11 +43,11 @@ def iter_clips(num_frames: int, clip_length: int, stride: int) -> List[Tuple[int
 def load_transcripts(transcript_json: str) -> Dict[str, List[Dict]]:
     """
     Load transcripts from JSON file.
-    
+
     Supports two formats:
     1. List: [{"video_path": "...", "transcript": [...]}, ...]
     2. Dict: {"video_name": [{"start": ..., "end": ..., "text": ...}], ...}
-    
+
     Returns: Dict mapping video_basename -> transcript segments with words
     """
     with open(transcript_json, "r") as f:
@@ -63,22 +63,22 @@ def load_transcripts(transcript_json: str) -> Dict[str, List[Dict]]:
         for item in raw:
             if not isinstance(item, dict):
                 continue
-                
+
             # Extract video path
             video_path = item.get("video_path") or item.get("video") or item.get("file")
             if not video_path:
                 continue
-                
+
             base = _basename_no_ext(str(video_path))
-            
+
             # Extract transcript segments
             transcript_segs = item.get("transcript") or item.get("segments") or []
             if not isinstance(transcript_segs, list):
                 continue
-            
+
             # Store segments with word-level data preserved
             norm[base] = transcript_segs
-    
+
     # Handle dict format: {"video_name": [...], ...}
     elif isinstance(raw, dict):
         for k, segs in raw.items():
@@ -134,7 +134,7 @@ def get_clip_text(
                 clip_words.append(word_text)
 
     result = " ".join(clip_words).strip()
-       
+
     return result if result else default_text
 
 
@@ -330,7 +330,7 @@ def main():
 
             print(
                 f"  Clip {clip_idx}: [{start_time:.2f}s-{end_time:.2f}s] "
-                f"text='{clip_text[:60]}...' ({len(clip_text)} chars)"
+                f"text='{clip_text[:60]}...' ({len(clip_text)} chars)",
             )
 
             # Generate FaceFormer pose frames
@@ -358,7 +358,8 @@ def main():
             # Verify frame count matches expected
             if num_pose_frames != num_frames:
                 print(
-                    f"  ⚠ Clip {clip_idx}: Expected {num_frames} pose frames, got {num_pose_frames}"
+                    f"  ⚠ Clip {clip_idx}: Expected {num_frames} pose frames, "
+                    f"got {num_pose_frames}",
                 )
 
             # Save conditioning data
@@ -376,9 +377,7 @@ def main():
                 num_pose_frames=num_pose_frames,
             )
 
-            print(
-                f" Clip {clip_idx}: Saved reference + {num_pose_frames} pose frames"
-            )
+            print(f" Clip {clip_idx}: Saved reference + {num_pose_frames} pose frames")
             clip_idx += 1
             total_clips += 1
 
@@ -389,7 +388,7 @@ def main():
         f"\n  - Pose frames: {base}_{{clip_idx}}_poses/"
         f"\n  - Metadata: {base}_{{clip_idx}}.json"
         f"\n\nNote: Ensure this matches the number of clips from save_vae_latents.py"
-        f"\n      (same --clip_length and --stride parameters)"
+        f"\n      (same --clip_length and --stride parameters)",
     )
 
 
