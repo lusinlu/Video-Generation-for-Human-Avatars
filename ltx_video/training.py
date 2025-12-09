@@ -7,6 +7,7 @@ from torch.utils.data import DataLoader
 import wandb
 from huggingface_hub import hf_hub_download
 from peft import LoraConfig, get_peft_model
+from transformers import T5EncoderModel, T5Tokenizer
 from ltx_video.utils.torch_utils import (
     save_training_checkpoint,
 )
@@ -20,22 +21,20 @@ from ltx_video.dataset import LatentPairDataset, ValidationDataset, collate_late
 from ltx_video.validation import validate_epoch
 
 
-def build_transformer(config: TrainConfig):
+def build_transformer(config: TrainConfig, patchifier: SymmetricPatchifier = None):
     ltxv_model_path = hf_hub_download(
         repo_id="Lightricks/LTX-Video",
         filename=config.checkpoint_path,
         repo_type="model",
     )
     if config.precision == "bfloat16":
-        model = Transformer3DModel.from_pretrained(ltxv_model_path).to(torch.bfloat16)
+        model = Transformer3DModel.from_pretrained(
+            ltxv_model_path, patchifier=patchifier
+        ).to(torch.bfloat16)
     else:
-        model = Transformer3DModel.from_pretrained(ltxv_model_path)
-
-    audio_dim = int(config.audio_embed_dim)
-    sample_param = next(model.parameters())
-    model.setup_audio_adapter(
-        audio_dim, dtype=sample_param.dtype, device=sample_param.device
-    )
+        model = Transformer3DModel.from_pretrained(
+            ltxv_model_path, patchifier=patchifier
+        )
 
     return model
 
@@ -84,7 +83,7 @@ def apply_training_strategy(
                     "scale_shift_table",
                     "adaln_single",
                     "caption_projection",
-                    "audio_adapter",
+                    "attn",  # self-attn layers
                     "attn2",  # cross-attn layers
                 )
             )
@@ -98,17 +97,24 @@ def train_step(
     scheduler: RectifiedFlowScheduler,
     patchifier: SymmetricPatchifier,
     config: TrainConfig,
+    prompt_embeds: torch.Tensor,
+    prompt_attention_mask: torch.Tensor,
     device: torch.device = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict]:
     model_dtype = next(model.parameters()).dtype
 
     latents = batch["latents"].to(device=device, dtype=model_dtype)
-    face_embeds = batch["audio_latents"].to(
+    ref_image_latents = batch["ref_image_latents"].to(device=device, dtype=model_dtype)
+    pose_latents = batch["pose_latents"].to(device=device, dtype=model_dtype)
+
+    # Use encoded prompt as encoder_hidden_states (same as inference)
+    # Expand prompt_embeds to match batch size
+    batch_size = latents.shape[0]
+    encoder_hidden_states = prompt_embeds.expand(batch_size, -1, -1).to(
         device=device, dtype=model_dtype
     )  # [B, 256, D]
 
-    audio_mask = batch.get("audio_mask", None)  # [B, 256]
-    audio_mask = audio_mask.to(device)
+    encoder_attention_mask = prompt_attention_mask.expand(batch_size, -1).to(device)
 
     tokens, latent_coords = patchifier.patchify(latents)
     indices_grid = latent_coords
@@ -135,16 +141,19 @@ def train_step(
         original_samples=tokens, noise=noise, timesteps=t
     )
     noisy_tokens = noisy_tokens.to(dtype=model_dtype)
+
     v_target = scheduler.build_velocity_target(tokens, noise, t)
     v_target = v_target.to(dtype=model_dtype)
 
     out = model(
         hidden_states=noisy_tokens,
         indices_grid=indices_grid,
-        encoder_hidden_states=face_embeds,
+        ref_image_hidden_states=ref_image_latents,
+        pose_hidden_states=pose_latents,
+        encoder_hidden_states=encoder_hidden_states,
         timestep=t,
         attention_mask=None,
-        encoder_attention_mask=audio_mask,
+        encoder_attention_mask=encoder_attention_mask,
         return_dict=True,
     )
     std_target = v_target.std()
@@ -165,6 +174,8 @@ def train_one_epoch(
     patchifier: SymmetricPatchifier,
     device: Union[torch.device, str],
     config: TrainConfig,
+    prompt_embeds: torch.Tensor,
+    prompt_attention_mask: torch.Tensor,
     epoch: int,
     global_step: int,
 ):
@@ -180,6 +191,8 @@ def train_one_epoch(
             scheduler,
             patchifier,
             config,
+            prompt_embeds,
+            prompt_attention_mask,
             device,
         )
 
@@ -212,7 +225,13 @@ def train_one_epoch(
     return global_step, epoch_loss
 
 
-def train_loop(config: TrainConfig, dataloader, val_dataloader=None):
+def train_loop(
+    config: TrainConfig,
+    dataloader,
+    val_dataloader=None,
+    prompt_embeds: torch.Tensor = None,
+    prompt_attention_mask: torch.Tensor = None,
+):
     if config.use_deepspeed:
         from ltx_video.training_deepspeed import train_loop_deepspeed
 
@@ -220,8 +239,7 @@ def train_loop(config: TrainConfig, dataloader, val_dataloader=None):
 
     device = get_device()
     patchifier = SymmetricPatchifier(patch_size=1)
-
-    model = build_transformer(config)
+    model = build_transformer(config, patchifier=patchifier)
     model.to(device)
     model = apply_training_strategy(
         model, config, getattr(config, "train_mode", "full")
@@ -314,13 +332,22 @@ def train_loop(config: TrainConfig, dataloader, val_dataloader=None):
             patchifier,
             device,
             config,
+            prompt_embeds,
+            prompt_attention_mask,
             epoch,
             global_step,
         )
 
         if val_dataloader is not None:
             val_loss = validate_epoch(
-                model, val_dataloader, rf_scheduler, patchifier, config, device
+                model,
+                val_dataloader,
+                rf_scheduler,
+                patchifier,
+                config,
+                prompt_embeds,
+                prompt_attention_mask,
+                device,
             )
             wandb.log({"val/loss": val_loss, "val/epoch": epoch}, step=global_step)
             print(f"Validation epoch {epoch+1}, loss: {val_loss:.6f}")
@@ -380,6 +407,60 @@ def get_device():
     return "cpu"
 
 
+def encode_prompt(
+    prompt: str,
+    tokenizer: T5Tokenizer,
+    text_encoder: T5EncoderModel,
+    device: torch.device,
+    max_length: int = 256,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Encode a prompt using T5 tokenizer and encoder, same as pipeline.encode_prompt.
+
+    Args:
+        prompt: Text prompt to encode
+        tokenizer: T5Tokenizer instance
+        text_encoder: T5EncoderModel instance
+        device: Device to place tensors on
+        max_length: Maximum sequence length (default 256)
+
+    Returns:
+        Tuple of (prompt_embeds, prompt_attention_mask)
+        - prompt_embeds: [1, max_length, hidden_dim]
+        - prompt_attention_mask: [1, max_length]
+    """
+    text_enc_device = next(text_encoder.parameters()).device
+
+    # Tokenize the prompt
+    text_inputs = tokenizer(
+        prompt,
+        padding="max_length",
+        max_length=max_length,
+        truncation=True,
+        add_special_tokens=True,
+        return_tensors="pt",
+    )
+    text_input_ids = text_inputs.input_ids
+    prompt_attention_mask = text_inputs.attention_mask
+
+    # Move to text encoder device
+    prompt_attention_mask = prompt_attention_mask.to(text_enc_device)
+
+    # Encode with text encoder
+    prompt_embeds = text_encoder(
+        text_input_ids.to(text_enc_device),
+        attention_mask=prompt_attention_mask,
+    )
+    prompt_embeds = prompt_embeds[0]  # Get hidden states
+
+    # Move to target device and dtype
+    dtype = text_encoder.dtype
+    prompt_embeds = prompt_embeds.to(dtype=dtype, device=device)
+    prompt_attention_mask = prompt_attention_mask.to(device)
+
+    return prompt_embeds, prompt_attention_mask
+
+
 def main():
 
     parser = argparse.ArgumentParser(
@@ -406,7 +487,7 @@ def main():
     setattr(config, "train_mode", args.train_mode)
 
     dataset = LatentPairDataset(
-        config.audio_latents_dir,
+        config.condition_latents_dir,
         config.encoder_latents_dir,
     )
     dataloader = DataLoader(
@@ -417,7 +498,7 @@ def main():
         collate_fn=collate_latent_pairs,
     )
     val_dataset = ValidationDataset(
-        config.val_audio_latents_dir, config.val_encoder_latents_dir, config.videos
+        config.val_condition_latents_dir, config.val_encoder_latents_dir
     )
     val_dataloader = DataLoader(
         val_dataset,
@@ -427,7 +508,40 @@ def main():
         collate_fn=collate_latent_pairs,
     )
 
-    train_loop(config, dataloader, val_dataloader)
+    prompt = "Person speaking naturally, with natual face and body movements"
+
+    # Load text encoder and tokenizer (same as inference.py)
+    # Default text encoder path (can be overridden in config)
+    text_encoder_model_name_or_path = getattr(
+        config, "text_encoder_model_name_or_path", "PixArt-alpha/PixArt-XL-2-1024-MS"
+    )
+
+    device = get_device()
+    print(f"Loading text encoder from {text_encoder_model_name_or_path}...")
+    text_encoder = T5EncoderModel.from_pretrained(
+        text_encoder_model_name_or_path, subfolder="text_encoder"
+    )
+    tokenizer = T5Tokenizer.from_pretrained(
+        text_encoder_model_name_or_path, subfolder="tokenizer"
+    )
+
+    text_encoder = text_encoder.to(device)
+    text_encoder = text_encoder.to(torch.bfloat16)
+    text_encoder.eval()
+
+    # Encode the prompt
+    print(f"Encoding prompt: {prompt}")
+    with torch.no_grad():
+        prompt_embeds, prompt_attention_mask = encode_prompt(
+            prompt=prompt,
+            tokenizer=tokenizer,
+            text_encoder=text_encoder,
+            device=device,
+        )
+
+    print(f"Prompt encoded. Shape: {prompt_embeds.shape}")
+
+    train_loop(config, dataloader, val_dataloader, prompt_embeds, prompt_attention_mask)
 
 
 if __name__ == "__main__":

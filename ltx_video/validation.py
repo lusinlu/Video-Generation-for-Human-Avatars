@@ -17,6 +17,8 @@ def validate_epoch(
     scheduler: RectifiedFlowScheduler,
     patchifier: SymmetricPatchifier,
     config,
+    prompt_embeds: torch.Tensor,
+    prompt_attention_mask: torch.Tensor,
     device: Union[torch.device, str],
 ):
     """Run one validation pass and return average MSE on velocity target.
@@ -29,12 +31,23 @@ def validate_epoch(
     total_count = 0
 
     for step_idx, batch in enumerate(dataloader):
+        model_dtype = next(model.parameters()).dtype
+
         # Move batch
-        latents = batch["latents"].to(device)
-        face_embeds = batch["audio_latents"].to(device)
-        audio_mask = batch.get("audio_mask")
-        if audio_mask is not None:
-            audio_mask = audio_mask.to(device)
+        latents = batch["latents"].to(device=device, dtype=model_dtype)
+        ref_image_latents = batch["ref_image_latents"].to(
+            device=device, dtype=model_dtype
+        )
+        pose_latents = batch["pose_latents"].to(device=device, dtype=model_dtype)
+
+        # Use encoded prompt as encoder_hidden_states (same as train_step)
+        # Expand prompt_embeds to match batch size
+        batch_size = latents.shape[0]
+        encoder_hidden_states = prompt_embeds.expand(batch_size, -1, -1).to(
+            device=device, dtype=model_dtype
+        )  # [B, 256, D]
+
+        encoder_attention_mask = prompt_attention_mask.expand(batch_size, -1).to(device)
 
         # Patchify latents
         tokens, latent_coords = patchifier.patchify(latents)
@@ -59,7 +72,6 @@ def validate_epoch(
         x_t = scheduler.add_noise(original_samples=tokens, noise=noise, timesteps=t)
         v_target = scheduler.build_velocity_target(tokens, noise, t)
 
-        model_dtype = next(model.parameters()).dtype
         x_t = x_t.to(dtype=model_dtype)
         v_target = v_target.to(dtype=model_dtype)
 
@@ -67,10 +79,12 @@ def validate_epoch(
         out = model(
             hidden_states=x_t,
             indices_grid=indices_grid,
-            encoder_hidden_states=face_embeds.to(dtype=model_dtype),
+            ref_image_hidden_states=ref_image_latents,
+            pose_hidden_states=pose_latents,
+            encoder_hidden_states=encoder_hidden_states,
             timestep=t,
             attention_mask=None,
-            encoder_attention_mask=audio_mask,
+            encoder_attention_mask=encoder_attention_mask,
             return_dict=True,
         )
 

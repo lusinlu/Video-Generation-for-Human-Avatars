@@ -759,6 +759,8 @@ class LTXVideoPipeline(DiffusionPipeline):
         stochastic_sampling: bool = False,
         media_items: Optional[torch.Tensor] = None,
         tone_map_compression_ratio: float = 0.0,
+        ref_image: Optional[torch.FloatTensor] = None,
+        pose_frames: Optional[torch.FloatTensor] = None,
         **kwargs,
     ) -> Union[ImagePipelineOutput, Tuple]:
         """
@@ -876,6 +878,22 @@ class LTXVideoPipeline(DiffusionPipeline):
         self.video_scale_factor = self.video_scale_factor if is_video else 1
         vae_per_channel_normalize = kwargs.get("vae_per_channel_normalize", True)
         image_cond_noise_scale = kwargs.get("image_cond_noise_scale", 0.0)
+
+        # Encode ref_image and pose_frames if provided
+        ref_image_hidden_states = None
+        pose_hidden_states = None
+        if ref_image is not None:
+            ref_image_hidden_states = vae_encode(
+                ref_image.to(dtype=self.vae.dtype, device=self.vae.device),
+                self.vae,
+                vae_per_channel_normalize=vae_per_channel_normalize,
+            )
+        if pose_frames is not None:
+            pose_hidden_states = vae_encode(
+                pose_frames.to(dtype=self.vae.dtype, device=self.vae.device),
+                self.vae,
+                vae_per_channel_normalize=vae_per_channel_normalize,
+            )
 
         latent_height = height // self.vae_scale_factor
         latent_width = width // self.vae_scale_factor
@@ -1032,24 +1050,24 @@ class LTXVideoPipeline(DiffusionPipeline):
 
         # Update the latents with the conditioning items and patchify them into (b, n, c)
         latents, pixel_coords, conditioning_mask, num_cond_latents = (
-            # self.prepare_conditioning(
-            #     conditioning_items=conditioning_items,
-            #     init_latents=latents,
-            #     num_frames=num_frames,
-            #     height=height,
-            #     width=width,
-            #     vae_per_channel_normalize=vae_per_channel_normalize,
-            #     generator=generator,
-            # )
-            self.prepare_conditioning_version2(
+            self.prepare_conditioning(
+                conditioning_items=conditioning_items,
                 init_latents=latents,
-                image_tensor=conditioning_items[0],
-                pose_tensor=conditioning_items[1],
                 num_frames=num_frames,
                 height=height,
                 width=width,
                 vae_per_channel_normalize=vae_per_channel_normalize,
+                generator=generator,
             )
+            # self.prepare_conditioning_version2(
+            #     init_latents=latents,
+            #     image_tensor=conditioning_items[0],
+            #     pose_tensor=conditioning_items[1],
+            #     num_frames=num_frames,
+            #     height=height,
+            #     width=width,
+            #     vae_per_channel_normalize=vae_per_channel_normalize,
+            # )
         )
         init_latents = latents.clone()  # Used for image_cond_noise_update
 
@@ -1160,9 +1178,32 @@ class LTXVideoPipeline(DiffusionPipeline):
 
                 # predict noise model_output
                 with context_manager:
+                    # Prepare ref_image and pose hidden states for this batch
+                    # Expand them to match latent_model_input batch size (which includes num_conds expansion)
+                    batch_ref_image_hidden_states = None
+                    batch_pose_hidden_states = None
+                    if ref_image_hidden_states is not None:
+                        # Expand to match batch size and num_conds (same as latent_model_input)
+                        batch_ref_image_hidden_states = torch.cat(
+                            [ref_image_hidden_states] * num_conds
+                        ).to(
+                            device=latent_model_input.device,
+                            dtype=self.transformer.dtype,
+                        )
+                    if pose_hidden_states is not None:
+                        # Expand to match batch size and num_conds (same as latent_model_input)
+                        batch_pose_hidden_states = torch.cat(
+                            [pose_hidden_states] * num_conds
+                        ).to(
+                            device=latent_model_input.device,
+                            dtype=self.transformer.dtype,
+                        )
+
                     noise_pred = self.transformer(
                         latent_model_input.to(self.transformer.dtype),
                         indices_grid=fractional_coords,
+                        ref_image_hidden_states=batch_ref_image_hidden_states,
+                        pose_hidden_states=batch_pose_hidden_states,
                         encoder_hidden_states=prompt_embeds_batch[indices].to(
                             self.transformer.dtype
                         ),

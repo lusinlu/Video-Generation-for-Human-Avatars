@@ -6,10 +6,10 @@ import yaml
 @dataclass
 class TrainConfig:
     checkpoint_path: str
-    audio_latents_dir: Optional[str] = None
+    condition_latents_dir: Optional[str] = None
     encoder_latents_dir: Optional[str] = None
     # Optional validation sources
-    val_audio_latents_dir: Optional[str] = None
+    val_condition_latents_dir: Optional[str] = None
     val_encoder_latents_dir: Optional[str] = None
     videos: Optional[str] = None
 
@@ -23,9 +23,6 @@ class TrainConfig:
     lora_alpha: int = 8
 
     precision: str = "bfloat16"
-
-    # Audio encoder settings
-    audio_embed_dim: int = 64  # Dimension of audio embeddings (FaceFormer output)
 
     gradient_checkpointing: bool = False
     gradient_accumulation_steps: int = 1  # Accumulate gradients over N steps
@@ -91,9 +88,9 @@ def load_train_config_from_yaml(yaml_path: str) -> TrainConfig:
     train_config = TrainConfig(
         checkpoint_path=checkpoint_path,
         precision=precision,
-        audio_latents_dir=train_block.get("audio_latents_dir"),
+        condition_latents_dir=train_block.get("condition_latents_dir"),
         encoder_latents_dir=train_block.get("encoder_latents_dir"),
-        val_audio_latents_dir=train_block.get("val_audio_latents_dir"),
+        val_condition_latents_dir=train_block.get("val_condition_latents_dir"),
         val_encoder_latents_dir=train_block.get("val_encoder_latents_dir"),
         videos=train_block.get("videos"),
         output_dir=train_block.get("output_dir"),
@@ -110,7 +107,6 @@ def load_train_config_from_yaml(yaml_path: str) -> TrainConfig:
         ),
         lora_rank=int(train_block.get("lora_rank", 8)),
         lora_alpha=int(train_block.get("lora_alpha", 8)),
-        audio_embed_dim=int(train_block.get("audio_embed_dim", 64)),
         gradient_checkpointing=bool(train_block.get("gradient_checkpointing", False)),
         gradient_accumulation_steps=int(
             train_block.get("gradient_accumulation_steps", 1)

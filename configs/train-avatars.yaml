@@ -5,22 +5,22 @@ sampler: "uniform"  # options: "uniform", "linear-quadratic", "from_checkpoint"
 
 # Training-specific parameters
 train:
-  audio_latents_dir: "../../data_avatar021225/audio_latents"  # FaceFormer audio latents (*_ff.npy)
+  condition_latents_dir: "../../data_avatar021225/condition_latents"  # FaceFormer audio latents (*_ff.npy)
   encoder_latents_dir: "../../data_avatar021225/encoder_latents"  # VAE encoder latents (*.pt)
 
-  val_audio_latents_dir: "../../data_avatar021225/val_audio_latents"  # FaceFormer audio latents (*_ff.npy)
+  val_condition_latents_dir: "../../data_avatar021225/val_condition_latents"  # FaceFormer audio latents (*_ff.npy)
   val_encoder_latents_dir: "../../data_avatar021225/val_encoder_latents"  # VAE encoder latents (*.pt)
   videos: "../../data_avatar021225/video_clips" 
 
   output_dir: "../avatars_checkpoints"
   
-  batch_size: 16
+  batch_size: 8
   num_epochs: 500
   learning_rate: 1e-4
   
   # Memory optimization
   gradient_checkpointing: false  
-  gradient_accumulation_steps: 8
+  gradient_accumulation_steps: 16
   
   # Model sharding (for multi-GPU training)
   use_deepspeed: false  
@@ -35,9 +35,6 @@ train:
   # LoRA parameters
   lora_rank: 32
   lora_alpha: 32
-  
-  # Audio encoder settings
-  audio_embed_dim: 64  # FaceFormer output dimension
   
   # Rectified Flow scheduler (training)
   rf_num_train_timesteps: 1000

@@ -16,6 +16,7 @@ from diffusers.utils import BaseOutput, is_torch_version
 from diffusers.utils import logging
 from torch import nn
 from safetensors import safe_open
+from ltx_video.models.transformers.symmetric_patchifier import SymmetricPatchifier
 
 
 from ltx_video.models.transformers.attention import BasicTransformerBlock
@@ -80,6 +81,7 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
         positional_embedding_max_pos: Optional[List[int]] = None,
         timestep_scale_multiplier: Optional[float] = None,
         causal_temporal_positioning: bool = False,  # For backward compatibility, will be deprecated
+        patchifier: Optional[SymmetricPatchifier] = None,
     ):
         super().__init__()
 
@@ -99,7 +101,7 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
         # RoPE (rotary positional embeddings) flag enabling frequency-based positional encoding across (t, h, w).
         self.use_rope = self.positional_embedding_type == "rope"
         self.timestep_scale_multiplier = timestep_scale_multiplier
-
+        self.patchifier = patchifier
         if self.positional_embedding_type == "absolute":
             raise ValueError("Absolute positional embedding is no longer supported")
         elif self.positional_embedding_type == "rope":
@@ -111,7 +113,6 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
                 raise ValueError(
                     "If `positional_embedding_type` type is rope, `positional_embedding_max_pos` must also be defined"
                 )
-
         # 3. Define transformers blocks
         # Stack of `BasicTransformerBlock`s implementing self/cross-attention + MLP with optional AdaNorm variants.
         # Each block is where most capacity lives and the primary target for LoRA or adapter injection.
@@ -349,12 +350,20 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
             transformer.load_state_dict(
                 comfy_single_file_state_dict, assign=True, strict=True
             )
+
+        # Set patchifier if provided (not saved in checkpoint as it's not trainable)
+        patchifier = kwargs.get("patchifier", None)
+        if patchifier is not None:
+            transformer.patchifier = patchifier
+
         return transformer
 
     def forward(
         self,
         hidden_states: torch.Tensor,
         indices_grid: torch.Tensor,
+        ref_image_hidden_states: Optional[torch.Tensor] = None,
+        pose_hidden_states: Optional[torch.Tensor] = None,
         encoder_hidden_states: Optional[torch.Tensor] = None,
         timestep: Optional[torch.LongTensor] = None,
         class_labels: Optional[torch.LongTensor] = None,
@@ -434,6 +443,27 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
                     1 - encoder_attention_mask.to(hidden_states.dtype)
                 ) * -10000.0
                 encoder_attention_mask = encoder_attention_mask.unsqueeze(1)
+
+        hidden_states = self.patchifier.unpatchify(
+            latents=hidden_states,
+            output_height=ref_image_hidden_states.shape[3],
+            output_width=ref_image_hidden_states.shape[4],
+            out_channels=self.patchify_proj.in_features
+            // math.prod(self.patchifier.patch_size),
+        )
+
+        # Lerp with noise latents for the first f_l_pose frames
+        hidden_states[:, :, 0:1, :, :] = torch.lerp(
+            hidden_states[:, :, 0:1, :, :],
+            ref_image_hidden_states,
+            0.85,  # interpolation factor
+        )
+        hidden_states[:, :, 1:, :, :] = torch.lerp(
+            hidden_states[:, :, 1:, :, :],
+            pose_hidden_states[:, :, 1:, :, :],
+            0.5,  # interpolation factor
+        )
+        hidden_states, _ = self.patchifier.patchify(hidden_states)
 
         # 1. Input token projection
         # Map latent tokens to the model hidden size before attention.

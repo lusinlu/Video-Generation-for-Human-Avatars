@@ -123,7 +123,9 @@ def main():
     parser.add_argument("--width", type=int, default=320)
     parser.add_argument(
         "--per_channel_normalize",
-        action="store_true",
+        type=bool,
+        default=True,
+        choices=[True, False],
         help="Use per-channel VAE normalization",
     )
     args = parser.parse_args()

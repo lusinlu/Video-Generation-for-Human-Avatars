@@ -180,11 +180,15 @@ def seed_everething(seed: int):
         torch.mps.manual_seed(seed)
 
 
-def create_transformer(ckpt_path: str, precision: str) -> Transformer3DModel:
+def create_transformer(
+    ckpt_path: str, precision: str, patchifier: SymmetricPatchifier = None
+) -> Transformer3DModel:
     if precision == "bfloat16":
-        return Transformer3DModel.from_pretrained(ckpt_path).to(torch.bfloat16)
+        return Transformer3DModel.from_pretrained(ckpt_path, patchifier=patchifier).to(
+            torch.bfloat16
+        )
     else:
-        return Transformer3DModel.from_pretrained(ckpt_path)
+        return Transformer3DModel.from_pretrained(ckpt_path, patchifier=patchifier)
 
 
 def create_ltx_video_pipeline(
@@ -206,7 +210,8 @@ def create_ltx_video_pipeline(
         allowed_inference_steps = configs.get("allowed_inference_steps", None)
 
     vae = CausalVideoAutoencoder.from_pretrained(ckpt_path)
-    transformer = create_transformer(ckpt_path, precision)
+    patchifier = SymmetricPatchifier(patch_size=1)
+    transformer = create_transformer(ckpt_path, precision, patchifier=patchifier)
 
     # Use constructor if sampler is specified, otherwise use from_pretrained
     if sampler == "from_checkpoint" or not sampler:
@@ -219,7 +224,6 @@ def create_ltx_video_pipeline(
     text_encoder = T5EncoderModel.from_pretrained(
         text_encoder_model_name_or_path, subfolder="text_encoder"
     )
-    patchifier = SymmetricPatchifier(patch_size=1)
     tokenizer = T5Tokenizer.from_pretrained(
         text_encoder_model_name_or_path, subfolder="tokenizer"
     )
@@ -468,6 +472,8 @@ def infer(config: InferenceConfig):
         mixed_precision=(precision == "mixed_precision"),
         offload_to_cpu=offload_to_cpu,
         device=device,
+        ref_image=conditioning_items[0],
+        pose_frames=conditioning_items[1],
     ).images
 
     # Crop the padded images to the desired resolution and number of frames
